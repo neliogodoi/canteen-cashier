@@ -1,0 +1,647 @@
+import { Injectable, Injector, signal } from '@angular/core';
+import type { FirebaseApp } from 'firebase/app';
+import type {
+  CollectionReference,
+  DocumentData,
+  DocumentReference,
+  Firestore
+} from 'firebase/firestore';
+
+import { AppSettings, CashSession, Product, Sale } from '../models/app.models';
+import { nowIso } from '../utils/date.util';
+import { defaultCanteenId, firebaseConfig } from './firebase.config';
+import { StorageService } from './storage.service';
+import { ProductService } from './product.service';
+import { CashSessionService } from './cash-session.service';
+import { SaleService } from './sale.service';
+import { SettingsService } from './settings.service';
+
+type SyncCollectionName = 'products' | 'cashSessions' | 'sales' | 'settings';
+type SyncReason =
+  | 'full_sync'
+  | 'cash_opened'
+  | 'cash_closed'
+  | 'sale_created'
+  | 'sale_reprinted'
+  | 'sale_cancelled'
+  | 'production_changed'
+  | 'product_changed'
+  | 'settings_changed';
+
+interface SyncCollectionMeta {
+  lastPulledAt: string;
+  lastPushedAt: string;
+}
+
+interface SyncMetadata {
+  collections: Record<SyncCollectionName, SyncCollectionMeta>;
+}
+
+const SYNC_META_KEY = 'cc.sync.meta';
+const SYNC_QUEUE_KEY = 'cc.sync.queue';
+const EMPTY_META: SyncCollectionMeta = {
+  lastPulledAt: '',
+  lastPushedAt: ''
+};
+
+interface SyncQueueItem {
+  id: string;
+  collections: SyncCollectionName[];
+  reason: SyncReason;
+  createdAt: string;
+}
+
+@Injectable({ providedIn: 'root' })
+export class FirebaseSyncService {
+  readonly syncStatus = signal<'idle' | 'syncing' | 'error'>('idle');
+  readonly lastSyncAt = signal('');
+  readonly lastError = signal('');
+  readonly queueSize = signal(0);
+
+  private app: FirebaseApp | null = null;
+  private firestore: Firestore | null = null;
+  private firebaseModulesPromise: Promise<FirebaseRuntime> | null = null;
+  private syncPromise: Promise<void> | null = null;
+  private metadata: SyncMetadata;
+  private queue: SyncQueueItem[];
+  private readonly debugEnabled = true;
+
+  constructor(
+    private readonly injector: Injector,
+    private readonly storage: StorageService
+  ) {
+    this.metadata = this.storage.getItem<SyncMetadata>(SYNC_META_KEY, {
+      collections: {
+        products: { ...EMPTY_META },
+        cashSessions: { ...EMPTY_META },
+        sales: { ...EMPTY_META },
+        settings: { ...EMPTY_META }
+      }
+    });
+    this.queue = this.storage.getItem<SyncQueueItem[]>(SYNC_QUEUE_KEY, []);
+    this.queueSize.set(this.queue.length);
+  }
+
+  async initialize(): Promise<void> {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    this.log('initialize', {
+      online: typeof navigator === 'undefined' ? 'unknown' : navigator.onLine,
+      queueSize: this.queue.length
+    });
+
+    window.addEventListener('online', () => {
+      this.log('browser online event');
+      this.enqueueFullSync();
+    });
+
+    this.enqueueFullSync();
+  }
+
+  enqueueFullSync(): void {
+    this.enqueue(['products', 'cashSessions', 'sales', 'settings'], 'full_sync');
+  }
+
+  enqueueCashSessionOpened(): void {
+    this.enqueue(['cashSessions'], 'cash_opened');
+  }
+
+  enqueueCashSessionClosed(): void {
+    this.enqueue(['cashSessions'], 'cash_closed');
+  }
+
+  enqueueSaleCreated(): void {
+    this.enqueue(['cashSessions', 'sales'], 'sale_created');
+  }
+
+  enqueueSaleReprinted(): void {
+    this.enqueue(['sales'], 'sale_reprinted');
+  }
+
+  enqueueSaleCancelled(): void {
+    this.enqueue(['cashSessions', 'sales'], 'sale_cancelled');
+  }
+
+  enqueueProductionChanged(): void {
+    this.enqueue(['cashSessions'], 'production_changed');
+  }
+
+  enqueueProductChanged(): void {
+    this.enqueue(['products'], 'product_changed');
+  }
+
+  enqueueSettingsChanged(): void {
+    this.enqueue(['settings'], 'settings_changed');
+  }
+
+  async syncIncremental(): Promise<void> {
+    if (this.syncPromise) {
+      this.log('sync already in progress, joining existing promise');
+      return this.syncPromise;
+    }
+
+    this.syncPromise = this.processQueue();
+    try {
+      await this.syncPromise;
+    } finally {
+      this.syncPromise = null;
+    }
+  }
+
+  private async processQueue(): Promise<void> {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      this.log('sync skipped because browser is offline');
+      return;
+    }
+
+    while (this.queue.length) {
+      const currentJob = this.queue[0];
+
+      try {
+        this.syncStatus.set('syncing');
+        this.lastError.set('');
+
+        const runtime = await this.getRuntime();
+        const db = runtime.firestore;
+        await this.ensureCanteenRootDocument(db, runtime);
+        const collections = new Set<SyncCollectionName>(currentJob.collections);
+        this.log('processing sync job', {
+          id: currentJob.id,
+          reason: currentJob.reason,
+          collections: [...collections]
+        });
+
+        const forceFull = currentJob.reason === 'full_sync';
+
+        if (collections.has('products')) {
+          await this.pushProducts(db, runtime, forceFull);
+        }
+        if (collections.has('cashSessions')) {
+          await this.pushCashSessions(db, runtime, forceFull);
+        }
+        if (collections.has('sales')) {
+          await this.pushSales(db, runtime, forceFull);
+        }
+        if (collections.has('settings')) {
+          await this.pushSettings(db, runtime, forceFull);
+        }
+
+        if (collections.has('products')) {
+          await this.pullProducts(db, runtime, forceFull);
+        }
+        if (collections.has('cashSessions')) {
+          await this.pullCashSessions(db, runtime, forceFull);
+        }
+        if (collections.has('sales')) {
+          await this.pullSales(db, runtime, forceFull);
+        }
+        if (collections.has('settings')) {
+          await this.pullSettings(db, runtime);
+        }
+
+        this.queue.shift();
+        this.persistQueue();
+        this.lastSyncAt.set(nowIso());
+        this.syncStatus.set('idle');
+        this.log('sync job completed', {
+          id: currentJob.id,
+          reason: currentJob.reason,
+          queueRemaining: this.queue.length
+        });
+      } catch (error) {
+        this.syncStatus.set('error');
+        const message = error instanceof Error ? error.message : 'Falha na sincronizacao com Firebase.';
+        this.lastError.set(message);
+        this.log('sync job failed', {
+          id: currentJob.id,
+          reason: currentJob.reason,
+          error: message
+        });
+        console.error('[FirebaseSync]', error);
+        break;
+      }
+    }
+  }
+
+  private async pushProducts(db: Firestore, runtime: FirebaseRuntime, forceFull = false): Promise<void> {
+    const productService = this.injector.get(ProductService);
+    const products = productService.getAllProducts();
+    const pending = forceFull
+      ? products
+      : products.filter((item) => isNewerThan(item.updatedAt, this.meta('products').lastPushedAt));
+    this.log('pushProducts', {
+      total: products.length,
+      pending: pending.length,
+      forceFull,
+      lastPushedAt: this.meta('products').lastPushedAt
+    });
+
+    await Promise.all(
+      pending.map((product) =>
+        runtime.setDoc(
+          runtime.doc(this.productsCollection(db, runtime), product.id),
+          sanitizeForFirestore(product),
+          { merge: true }
+        )
+      )
+    );
+
+    this.updatePushedMeta('products', maxUpdatedAt(products));
+  }
+
+  private async pullProducts(db: Firestore, runtime: FirebaseRuntime, forceFull = false): Promise<void> {
+    const productService = this.injector.get(ProductService);
+    const snapshot = await runtime.getDocs(
+      buildIncrementalQuery(
+        this.productsCollection(db, runtime),
+        forceFull ? '' : this.meta('products').lastPulledAt,
+        runtime
+      )
+    );
+    const remoteProducts = snapshot.docs.map((item) => item.data() as Product);
+    this.log('pullProducts', {
+      fetched: remoteProducts.length,
+      forceFull,
+      lastPulledAt: this.meta('products').lastPulledAt
+    });
+    const merged = mergeEntities(productService.getAllProducts(), remoteProducts);
+    productService.replaceAllProducts(merged);
+    this.updatePulledMeta('products', maxUpdatedAt(remoteProducts));
+  }
+
+  private async pushCashSessions(db: Firestore, runtime: FirebaseRuntime, forceFull = false): Promise<void> {
+    const cashSessionService = this.injector.get(CashSessionService);
+    const sessions = cashSessionService.getAllSessions();
+    const pending = forceFull
+      ? sessions
+      : sessions.filter((item) => isNewerThan(item.updatedAt, this.meta('cashSessions').lastPushedAt));
+    this.log('pushCashSessions', {
+      total: sessions.length,
+      pending: pending.length,
+      forceFull,
+      lastPushedAt: this.meta('cashSessions').lastPushedAt
+    });
+
+    await Promise.all(
+      pending.map((session) =>
+        runtime.setDoc(
+          runtime.doc(this.cashSessionsCollection(db, runtime), session.id),
+          sanitizeForFirestore(session),
+          { merge: true }
+        )
+      )
+    );
+
+    this.updatePushedMeta('cashSessions', maxUpdatedAt(sessions));
+  }
+
+  private async pullCashSessions(db: Firestore, runtime: FirebaseRuntime, forceFull = false): Promise<void> {
+    const cashSessionService = this.injector.get(CashSessionService);
+    const snapshot = await runtime.getDocs(
+      buildIncrementalQuery(
+        this.cashSessionsCollection(db, runtime),
+        forceFull ? '' : this.meta('cashSessions').lastPulledAt,
+        runtime
+      )
+    );
+    const remoteSessions = snapshot.docs.map((item) => item.data() as CashSession);
+    this.log('pullCashSessions', {
+      fetched: remoteSessions.length,
+      forceFull,
+      lastPulledAt: this.meta('cashSessions').lastPulledAt
+    });
+    const merged = mergeEntities(cashSessionService.getAllSessions(), remoteSessions);
+    cashSessionService.replaceAllSessions(merged);
+    this.updatePulledMeta('cashSessions', maxUpdatedAt(remoteSessions));
+  }
+
+  private async pushSales(db: Firestore, runtime: FirebaseRuntime, forceFull = false): Promise<void> {
+    const saleService = this.injector.get(SaleService);
+    const sales = saleService.getAllSales();
+    const pending = forceFull
+      ? sales
+      : sales.filter((item) => isNewerThan(item.updatedAt, this.meta('sales').lastPushedAt));
+    this.log('pushSales', {
+      total: sales.length,
+      pending: pending.length,
+      forceFull,
+      lastPushedAt: this.meta('sales').lastPushedAt
+    });
+
+    await Promise.all(
+      pending.map((sale) =>
+        runtime.setDoc(runtime.doc(this.salesCollection(db, runtime), sale.id), sanitizeForFirestore(sale), {
+          merge: true
+        })
+      )
+    );
+
+    this.updatePushedMeta('sales', maxUpdatedAt(sales));
+  }
+
+  private async pullSales(db: Firestore, runtime: FirebaseRuntime, forceFull = false): Promise<void> {
+    const saleService = this.injector.get(SaleService);
+    const snapshot = await runtime.getDocs(
+      buildIncrementalQuery(
+        this.salesCollection(db, runtime),
+        forceFull ? '' : this.meta('sales').lastPulledAt,
+        runtime
+      )
+    );
+    const remoteSales = snapshot.docs.map((item) => item.data() as Sale);
+    this.log('pullSales', {
+      fetched: remoteSales.length,
+      forceFull,
+      lastPulledAt: this.meta('sales').lastPulledAt
+    });
+    const merged = mergeEntities(saleService.getAllSales(), remoteSales);
+    saleService.replaceAllSales(merged);
+    this.updatePulledMeta('sales', maxUpdatedAt(remoteSales));
+  }
+
+  private async pushSettings(db: Firestore, runtime: FirebaseRuntime, forceFull = false): Promise<void> {
+    const settingsService = this.injector.get(SettingsService);
+    const settings = settingsService.settings();
+    if (!forceFull && !isNewerThan(settings.updatedAt, this.meta('settings').lastPushedAt)) {
+      this.log('pushSettings skipped', {
+        forceFull,
+        updatedAt: settings.updatedAt,
+        lastPushedAt: this.meta('settings').lastPushedAt
+      });
+      return;
+    }
+
+    this.log('pushSettings', {
+      forceFull,
+      updatedAt: settings.updatedAt
+    });
+    await runtime.setDoc(this.settingsDoc(db, runtime), sanitizeForFirestore(settings), { merge: true });
+    this.updatePushedMeta('settings', settings.updatedAt);
+  }
+
+  private async pullSettings(db: Firestore, runtime: FirebaseRuntime): Promise<void> {
+    const settingsService = this.injector.get(SettingsService);
+    const snapshot = await runtime.getDoc(this.settingsDoc(db, runtime));
+    if (!snapshot.exists()) {
+      this.log('pullSettings found no remote settings');
+      return;
+    }
+
+    const remoteSettings = snapshot.data() as AppSettings;
+    this.log('pullSettings', {
+      remoteUpdatedAt: remoteSettings.updatedAt
+    });
+    const localSettings = settingsService.settings();
+    const winner = compareUpdatedAt(localSettings.updatedAt, remoteSettings.updatedAt) >= 0 ? localSettings : remoteSettings;
+    settingsService.replaceSettings(winner);
+    this.updatePulledMeta('settings', remoteSettings.updatedAt);
+  }
+
+  private async getRuntime(): Promise<FirebaseRuntime> {
+    if (this.firebaseModulesPromise) {
+      return this.firebaseModulesPromise;
+    }
+
+    this.log('loading firebase runtime lazily');
+    this.firebaseModulesPromise = this.loadFirebaseRuntime();
+    return this.firebaseModulesPromise;
+  }
+
+  private async loadFirebaseRuntime(): Promise<FirebaseRuntime> {
+    const appModule = await import('firebase/app');
+    const firestoreModule = await import('firebase/firestore');
+
+    if (this.firestore) {
+      this.log('reusing existing firestore instance');
+      return buildRuntime(appModule, firestoreModule, this.app!, this.firestore);
+    }
+
+    this.app = appModule.initializeApp(firebaseConfig);
+    this.firestore = firestoreModule.getFirestore(this.app);
+    this.log('firebase initialized', {
+      projectId: firebaseConfig.projectId
+    });
+    return buildRuntime(appModule, firestoreModule, this.app, this.firestore);
+  }
+
+  private rootCollection(db: Firestore, name: SyncCollectionName, runtime: FirebaseRuntime) {
+    return runtime.collection(db, 'canteens', defaultCanteenId, name);
+  }
+
+  private productsCollection(db: Firestore, runtime: FirebaseRuntime) {
+    return this.rootCollection(db, 'products', runtime);
+  }
+
+  private cashSessionsCollection(db: Firestore, runtime: FirebaseRuntime) {
+    return this.rootCollection(db, 'cashSessions', runtime);
+  }
+
+  private salesCollection(db: Firestore, runtime: FirebaseRuntime) {
+    return this.rootCollection(db, 'sales', runtime);
+  }
+
+  private settingsDoc(db: Firestore, runtime: FirebaseRuntime) {
+    return runtime.doc(this.rootCollection(db, 'settings', runtime), 'default');
+  }
+
+  private canteenDoc(db: Firestore, runtime: FirebaseRuntime) {
+    return runtime.doc(runtime.collection(db, 'canteens'), defaultCanteenId);
+  }
+
+  private meta(collectionName: SyncCollectionName): SyncCollectionMeta {
+    return this.metadata.collections[collectionName];
+  }
+
+  private updatePulledMeta(collectionName: SyncCollectionName, timestamp: string): void {
+    if (!timestamp || compareUpdatedAt(timestamp, this.meta(collectionName).lastPulledAt) <= 0) {
+      return;
+    }
+
+    this.metadata.collections[collectionName].lastPulledAt = timestamp;
+    this.persistMeta();
+  }
+
+  private updatePushedMeta(collectionName: SyncCollectionName, timestamp: string): void {
+    if (!timestamp || compareUpdatedAt(timestamp, this.meta(collectionName).lastPushedAt) <= 0) {
+      return;
+    }
+
+    this.metadata.collections[collectionName].lastPushedAt = timestamp;
+    this.persistMeta();
+  }
+
+  private persistMeta(): void {
+    this.storage.setItem(SYNC_META_KEY, this.metadata);
+  }
+
+  private async ensureCanteenRootDocument(db: Firestore, runtime: FirebaseRuntime): Promise<void> {
+    const settingsService = this.injector.get(SettingsService);
+    const settings = settingsService.settings();
+
+    this.log('ensure canteen root document', {
+      canteenId: defaultCanteenId,
+      name: settings.canteenName
+    });
+    await runtime.setDoc(
+      this.canteenDoc(db, runtime),
+      sanitizeForFirestore({
+        id: defaultCanteenId,
+        name: settings.canteenName,
+        updatedAt: nowIso()
+      }),
+      { merge: true }
+    );
+  }
+
+  private enqueue(collections: SyncCollectionName[], reason: SyncReason): void {
+    const normalizedCollections = [...new Set(collections)];
+    const lastJob = this.queue.at(-1);
+
+    if (
+      lastJob &&
+      lastJob.reason === reason &&
+      sameCollections(lastJob.collections, normalizedCollections)
+    ) {
+      this.log('enqueue deduplicated', {
+        reason,
+        collections: normalizedCollections
+      });
+      void this.syncIncremental();
+      return;
+    }
+
+    this.queue.push({
+      id: crypto.randomUUID(),
+      collections: normalizedCollections,
+      reason,
+      createdAt: nowIso()
+    });
+    this.persistQueue();
+    this.log('enqueue', {
+      reason,
+      collections: normalizedCollections,
+      queueSize: this.queue.length
+    });
+    void this.syncIncremental();
+  }
+
+  private persistQueue(): void {
+    this.queueSize.set(this.queue.length);
+    this.storage.setItem(SYNC_QUEUE_KEY, this.queue);
+  }
+
+  private log(message: string, details?: unknown): void {
+    if (!this.debugEnabled) {
+      return;
+    }
+
+    if (details === undefined) {
+      console.log(`[FirebaseSync] ${message}`);
+      return;
+    }
+
+    console.log(`[FirebaseSync] ${message}`, details);
+  }
+}
+
+function mergeEntities<T extends { id: string; updatedAt: string }>(localItems: T[], remoteItems: T[]): T[] {
+  const merged = new Map<string, T>();
+
+  for (const item of localItems) {
+    merged.set(item.id, item);
+  }
+
+  for (const item of remoteItems) {
+    const current = merged.get(item.id);
+    if (!current || compareUpdatedAt(item.updatedAt, current.updatedAt) > 0) {
+      merged.set(item.id, item);
+    }
+  }
+
+  return [...merged.values()];
+}
+
+function maxUpdatedAt<T extends { updatedAt: string }>(items: T[]): string {
+  return items.reduce((latest, item) => (compareUpdatedAt(item.updatedAt, latest) > 0 ? item.updatedAt : latest), '');
+}
+
+function isNewerThan(candidate: string, baseline: string): boolean {
+  return compareUpdatedAt(candidate, baseline) > 0;
+}
+
+function compareUpdatedAt(left: string, right: string): number {
+  return (left || '').localeCompare(right || '');
+}
+
+function sameCollections(left: SyncCollectionName[], right: SyncCollectionName[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  const leftSorted = [...left].sort();
+  const rightSorted = [...right].sort();
+  return leftSorted.every((item, index) => item === rightSorted[index]);
+}
+
+function buildIncrementalQuery(
+  collectionRef: CollectionReference<DocumentData, DocumentData>,
+  lastPulledAt: string,
+  runtime: FirebaseRuntime
+) {
+  if (!lastPulledAt) {
+    return runtime.query(collectionRef, runtime.orderBy('updatedAt'));
+  }
+
+  return runtime.query(collectionRef, runtime.where('updatedAt', '>', lastPulledAt), runtime.orderBy('updatedAt'));
+}
+
+function sanitizeForFirestore<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => sanitizeForFirestore(item))
+      .filter((item) => item !== undefined) as T;
+  }
+
+  if (value && typeof value === 'object') {
+    const sanitizedEntries = Object.entries(value)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .map(([key, entryValue]) => [key, sanitizeForFirestore(entryValue)]);
+
+    return Object.fromEntries(sanitizedEntries) as T;
+  }
+
+  return value;
+}
+
+interface FirebaseRuntime {
+  firestore: Firestore;
+  collection: typeof import('firebase/firestore').collection;
+  doc: typeof import('firebase/firestore').doc;
+  getDoc: typeof import('firebase/firestore').getDoc;
+  getDocs: typeof import('firebase/firestore').getDocs;
+  query: typeof import('firebase/firestore').query;
+  where: typeof import('firebase/firestore').where;
+  orderBy: typeof import('firebase/firestore').orderBy;
+  setDoc: typeof import('firebase/firestore').setDoc;
+}
+
+function buildRuntime(
+  _appModule: typeof import('firebase/app'),
+  firestoreModule: typeof import('firebase/firestore'),
+  _app: FirebaseApp,
+  firestore: Firestore
+): FirebaseRuntime {
+  return {
+    firestore,
+    collection: firestoreModule.collection,
+    doc: firestoreModule.doc,
+    getDoc: firestoreModule.getDoc,
+    getDocs: firestoreModule.getDocs,
+    query: firestoreModule.query,
+    where: firestoreModule.where,
+    orderBy: firestoreModule.orderBy,
+    setDoc: firestoreModule.setDoc
+  };
+}
