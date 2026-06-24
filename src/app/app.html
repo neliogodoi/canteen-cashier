@@ -1,30 +1,40 @@
 <div class="shell">
   @if (showTopbar()) {
     <header class="topbar">
-      <nav class="nav">
-        <a routerLink="/home" routerLinkActive="active">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M3 10.5 12 3l9 7.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
-            <path d="M5.5 9.5V21h13V9.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
-          </svg>
-          <span>Home</span>
-        </a>
-        <a routerLink="/products" routerLinkActive="active">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M5 6.5h14M5 12h14M5 17.5h14" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
-            <path d="M3 6.5h.01M3 12h.01M3 17.5h.01" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4" />
-          </svg>
-          <span>Produtos</span>
-        </a>
-        <a routerLink="/history" routerLinkActive="active">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 8v4l2.5 2.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
-            <path d="M20 12a8 8 0 1 1-2.34-5.66" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
-            <path d="M20 4v4h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
-          </svg>
-          <span>Historico</span>
-        </a>
-      </nav>
+      <div class="nav-scroll">
+        <nav class="nav">
+          <a routerLink="/home" routerLinkActive="active">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 10.5 12 3l9 7.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+              <path d="M5.5 9.5V21h13V9.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+            </svg>
+            <span>Home</span>
+          </a>
+          <a routerLink="/products" routerLinkActive="active">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 6.5h14M5 12h14M5 17.5h14" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+              <path d="M3 6.5h.01M3 12h.01M3 17.5h.01" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4" />
+            </svg>
+            <span>Produtos</span>
+          </a>
+          <a routerLink="/history" routerLinkActive="active">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 8v4l2.5 2.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+              <path d="M20 12a8 8 0 1 1-2.34-5.66" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+              <path d="M20 4v4h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+            </svg>
+            <span>Historico</span>
+          </a>
+          <button class="nav-action" type="button" (click)="signOut()">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+              <path d="M14 16l4-4-4-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+              <path d="M18 12H9" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+            </svg>
+            <span>Sair</span>
+          </button>
+        </nav>
+      </div>
     </header>
   }
 

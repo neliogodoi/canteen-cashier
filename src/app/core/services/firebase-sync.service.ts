@@ -1,4 +1,4 @@
-import { Injectable, Injector, signal } from '@angular/core';
+import { effect, Injectable, Injector, signal } from '@angular/core';
 import type { FirebaseApp } from 'firebase/app';
 import type {
   CollectionReference,
@@ -9,6 +9,7 @@ import type {
 
 import { AppSettings, CashSession, Product, Sale } from '../models/app.models';
 import { nowIso } from '../utils/date.util';
+import { AuthService } from './auth.service';
 import { defaultCanteenId, firebaseConfig } from './firebase.config';
 import { StorageService } from './storage.service';
 import { ProductService } from './product.service';
@@ -68,7 +69,8 @@ export class FirebaseSyncService {
 
   constructor(
     private readonly injector: Injector,
-    private readonly storage: StorageService
+    private readonly storage: StorageService,
+    private readonly authService: AuthService
   ) {
     this.metadata = this.storage.getItem<SyncMetadata>(SYNC_META_KEY, {
       collections: {
@@ -80,6 +82,22 @@ export class FirebaseSyncService {
     });
     this.queue = this.storage.getItem<SyncQueueItem[]>(SYNC_QUEUE_KEY, []);
     this.queueSize.set(this.queue.length);
+
+    effect(
+      () => {
+        if (!this.authService.initialized()) {
+          return;
+        }
+
+        const authenticated = this.authService.isAuthenticated();
+        this.log('auth state changed', { authenticated });
+
+        if (authenticated) {
+          this.enqueueFullSync();
+        }
+      },
+      { allowSignalWrites: true }
+    );
   }
 
   async initialize(): Promise<void> {
@@ -94,10 +112,17 @@ export class FirebaseSyncService {
 
     window.addEventListener('online', () => {
       this.log('browser online event');
-      this.enqueueFullSync();
+      if (this.authService.isAuthenticated()) {
+        this.enqueueFullSync();
+      }
     });
 
-    this.enqueueFullSync();
+    if (this.authService.isAuthenticated()) {
+      this.enqueueFullSync();
+      return;
+    }
+
+    this.log('waiting for authenticated session before syncing');
   }
 
   enqueueFullSync(): void {
@@ -151,6 +176,11 @@ export class FirebaseSyncService {
   }
 
   private async processQueue(): Promise<void> {
+    if (!this.authService.isAuthenticated()) {
+      this.log('sync skipped because user is not authenticated');
+      return;
+    }
+
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       this.log('sync skipped because browser is offline');
       return;
@@ -418,7 +448,7 @@ export class FirebaseSyncService {
       return buildRuntime(appModule, firestoreModule, this.app!, this.firestore);
     }
 
-    this.app = appModule.initializeApp(firebaseConfig);
+    this.app = appModule.getApps().length ? appModule.getApp() : appModule.initializeApp(firebaseConfig);
     this.firestore = firestoreModule.getFirestore(this.app);
     this.log('firebase initialized', {
       projectId: firebaseConfig.projectId

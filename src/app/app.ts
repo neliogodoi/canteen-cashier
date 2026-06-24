@@ -3,6 +3,8 @@ import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } fro
 import { toSignal } from '@angular/core/rxjs-interop';
 import { filter, map, startWith } from 'rxjs';
 
+import { AuthService } from './core/services/auth.service';
+
 @Component({
   selector: 'app-root',
   imports: [RouterOutlet, RouterLink, RouterLinkActive],
@@ -10,6 +12,7 @@ import { filter, map, startWith } from 'rxjs';
   styleUrl: './app.scss'
 })
 export class App {
+  private readonly authService = inject(AuthService);
   private readonly router = inject(Router);
   private readonly currentUrl = toSignal(
     this.router.events.pipe(
@@ -20,5 +23,12 @@ export class App {
     { initialValue: this.router.url }
   );
 
-  readonly showTopbar = computed(() => this.currentUrl() !== '/cash/current');
+  readonly showTopbar = computed(
+    () => this.authService.isAuthenticated() && this.currentUrl() !== '/cash/current' && this.currentUrl() !== '/login'
+  );
+
+  async signOut(): Promise<void> {
+    await this.authService.signOut();
+    await this.router.navigateByUrl('/login');
+  }
 }

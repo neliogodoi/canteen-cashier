@@ -1,5 +1,7 @@
 import { Routes } from '@angular/router';
 
+import { authGuard, guestGuard } from './core/guards/auth.guard';
+import { LoginPageComponent } from './features/auth/login-page.component';
 import { CashDetailsPageComponent } from './features/history/cash-details-page.component';
 import { HistoryPageComponent } from './features/history/history-page.component';
 import { MonthlyReportPageComponent } from './features/history/monthly-report-page.component';
@@ -12,15 +14,16 @@ import { CloseCashPageComponent } from './features/cash-register/close-cash-page
 
 export const routes: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'home' },
-  { path: 'home', component: HomePageComponent },
-  { path: 'products', component: ProductsPageComponent },
-  { path: 'products/new', component: ProductFormPageComponent },
-  { path: 'products/:id/edit', component: ProductFormPageComponent },
-  { path: 'cash/open', component: OpenCashPageComponent },
-  { path: 'cash/current', component: CashRegisterPageComponent },
-  { path: 'cash/:id', component: CashDetailsPageComponent },
-  { path: 'cash/:id/close', component: CloseCashPageComponent },
-  { path: 'history', component: HistoryPageComponent },
-  { path: 'reports/monthly', component: MonthlyReportPageComponent },
+  { path: 'login', component: LoginPageComponent, canActivate: [guestGuard] },
+  { path: 'home', component: HomePageComponent, canActivate: [authGuard] },
+  { path: 'products', component: ProductsPageComponent, canActivate: [authGuard] },
+  { path: 'products/new', component: ProductFormPageComponent, canActivate: [authGuard] },
+  { path: 'products/:id/edit', component: ProductFormPageComponent, canActivate: [authGuard] },
+  { path: 'cash/open', component: OpenCashPageComponent, canActivate: [authGuard] },
+  { path: 'cash/current', component: CashRegisterPageComponent, canActivate: [authGuard] },
+  { path: 'cash/:id', component: CashDetailsPageComponent, canActivate: [authGuard] },
+  { path: 'cash/:id/close', component: CloseCashPageComponent, canActivate: [authGuard] },
+  { path: 'history', component: HistoryPageComponent, canActivate: [authGuard] },
+  { path: 'reports/monthly', component: MonthlyReportPageComponent, canActivate: [authGuard] },
   { path: '**', redirectTo: 'home' }
 ];

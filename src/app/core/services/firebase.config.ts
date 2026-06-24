@@ -8,3 +8,4 @@ export const firebaseConfig = {
 };
 
 export const defaultCanteenId = 'pedra-roxa';
+export const authUsernameDomain = 'pedra-roxa.login';
