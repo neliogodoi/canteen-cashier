@@ -17,10 +17,15 @@ export class SettingsService {
     private readonly storage: StorageService,
     private readonly syncService: FirebaseSyncService
   ) {
+    const hasStoredSettings = this.storage.hasItem(SETTINGS_KEY);
     const storedSettings = this.storage.getItem<AppSettings>(SETTINGS_KEY, this.loadDefault());
     const normalizedSettings = this.normalizeSettings(storedSettings);
     this.settings.set(normalizedSettings);
     this.storage.setItem(SETTINGS_KEY, normalizedSettings);
+
+    if (!hasStoredSettings) {
+      this.syncService.markSettingsPending();
+    }
   }
 
   updatePrinterDeviceName(printerDeviceName?: string): void {
@@ -68,6 +73,7 @@ export class SettingsService {
   private persist(settings: AppSettings, scheduleSync: boolean): void {
     this.storage.setItem(SETTINGS_KEY, settings);
     if (scheduleSync) {
+      this.syncService.markSettingsPending();
       this.syncService.enqueueSettingsChanged();
     }
   }

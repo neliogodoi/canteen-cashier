@@ -15,7 +15,7 @@ export class ProductService {
     private readonly storage: StorageService,
     private readonly syncService: FirebaseSyncService
   ) {
-    this.products.set(this.storage.getItem<Product[]>(PRODUCTS_KEY, this.seedProducts()));
+    this.products.set(this.storage.getItem<Product[]>(PRODUCTS_KEY, []));
     this.persist();
   }
 
@@ -42,6 +42,7 @@ export class ProductService {
 
     this.products.update((items) => [...items, product]);
     this.persist();
+    this.syncService.markProductPending(product.id);
     this.syncService.enqueueProductChanged();
     return product;
   }
@@ -66,6 +67,7 @@ export class ProductService {
     );
 
     this.persist();
+    this.syncService.markProductPending(id);
     this.syncService.enqueueProductChanged();
     return updatedProduct;
   }
@@ -86,41 +88,5 @@ export class ProductService {
 
   private persist(): void {
     this.storage.setItem(PRODUCTS_KEY, this.products());
-  }
-
-  private seedProducts(): Product[] {
-    const now = nowIso();
-    return [
-      {
-        id: crypto.randomUUID(),
-        name: 'Pastel',
-        description: 'Carne ou queijo',
-        category: 'Salgados',
-        priceInCents: 800,
-        active: true,
-        createdAt: now,
-        updatedAt: now
-      },
-      {
-        id: crypto.randomUUID(),
-        name: 'Pudim',
-        description: 'Pote individual',
-        category: 'Doces',
-        priceInCents: 700,
-        active: true,
-        createdAt: now,
-        updatedAt: now
-      },
-      {
-        id: crypto.randomUUID(),
-        name: 'Refrigerante',
-        description: 'Lata 350ml',
-        category: 'Bebidas',
-        priceInCents: 600,
-        active: true,
-        createdAt: now,
-        updatedAt: now
-      }
-    ];
   }
 }

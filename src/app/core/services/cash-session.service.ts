@@ -100,6 +100,7 @@ export class CashSessionService {
 
     this.sessions.update((items) => [...items, session]);
     this.persist();
+    this.syncService.markCashSessionPending(session.id);
     this.syncService.enqueueCashSessionOpened();
     return session;
   }
@@ -140,6 +141,7 @@ export class CashSessionService {
     };
 
     this.replaceSession(updatedSession);
+    this.syncService.markCashSessionPending(updatedSession.id);
     this.syncService.enqueueCashSessionClosed();
     return updatedSession;
   }
@@ -158,6 +160,8 @@ export class CashSessionService {
     };
 
     this.replaceSession(updatedSession);
+    this.syncService.markCashSessionPending(updatedSession.id);
+    this.syncService.enqueueCashSessionClosed();
     return updatedSession;
   }
 

@@ -23,7 +23,8 @@ const LEGACY_KEYS = [
   'cc.sales',
   'cc.settings',
   'cc.sync.meta',
-  'cc.sync.queue'
+  'cc.sync.queue',
+  'cc.sync.pending'
 ];
 
 @Injectable({ providedIn: 'root' })
@@ -57,6 +58,10 @@ export class StorageService {
     }
 
     return fallback;
+  }
+
+  hasItem(key: string): boolean {
+    return this.cache.has(key);
   }
 
   setItem<T>(key: string, value: T): void {
