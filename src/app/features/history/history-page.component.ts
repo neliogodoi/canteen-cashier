@@ -15,7 +15,6 @@ import { formatDateTime } from '../../core/utils/date.util';
         <h1>Historico de caixas</h1>
       </div>
       <div class="head-actions">
-        <a class="button ghost" routerLink="/tickets/renew">Renovar ticket</a>
         <a class="button secondary" routerLink="/reports/monthly">Relatorio mensal</a>
       </div>
     </section>

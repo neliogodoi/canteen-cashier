@@ -1,16 +1,18 @@
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 
 import { CashSessionService } from '../../core/services/cash-session.service';
 import { Sale } from '../../core/models/app.models';
 import { FirebaseSyncService } from '../../core/services/firebase-sync.service';
 import { SaleService } from '../../core/services/sale.service';
+import { TicketRenewalService } from '../../core/services/ticket-renewal.service';
 import { centsToCurrency } from '../../core/utils/money.util';
 import { formatDateTime } from '../../core/utils/date.util';
 
 @Component({
   selector: 'app-cash-details-page',
-  imports: [RouterLink],
+  imports: [RouterLink, FormsModule],
   template: `
     @if (session(); as currentSession) {
       <section class="card">
@@ -101,6 +103,53 @@ import { formatDateTime } from '../../core/utils/date.util';
             }
           </div>
         </article>
+
+        <article class="card">
+          <h2>Renovar ticket</h2>
+          <p class="muted">Escaneie o QR ou cole o codigo de um ticket deste caixa.</p>
+
+          <div class="scanner-form">
+            <input
+              type="text"
+              placeholder="CC:token-do-ticket"
+              [ngModel]="ticketCode()"
+              (ngModelChange)="ticketCode.set($event)"
+            />
+            <button type="button" class="button secondary" (click)="lookupTicket()">Buscar ticket</button>
+          </div>
+
+          @if (scanMessage()) {
+            <p class="notice">{{ scanMessage() }}</p>
+          }
+
+          @if (matchedSale(); as match) {
+            <div class="renewal-match">
+              <div>
+                <strong>{{ match.sale.ticketNumber }}</strong>
+                <small>{{ formatDate(match.sale.createdAt) }}</small>
+              </div>
+              <div class="numbers">
+                <small>{{ paymentLabel(match.sale.paymentMethod) }}</small>
+                <strong>{{ formatMoney(match.sale.total) }}</strong>
+              </div>
+            </div>
+            <button type="button" class="button" (click)="renewTicket()">Renovar e imprimir</button>
+          }
+
+          <div class="rows renewals-list">
+            @for (renewal of sessionRenewals(); track renewal.id) {
+              <div class="row">
+                <div>
+                  <strong>{{ renewal.ticketNumber }}</strong>
+                  <small>{{ renewal.operatorName }}</small>
+                </div>
+                <small>{{ formatDate(renewal.renewedAt) }}</small>
+              </div>
+            } @empty {
+              <p class="muted">Nenhuma renovacao registrada neste caixa.</p>
+            }
+          </div>
+        </article>
       </section>
     } @else {
       <section class="card">
@@ -171,6 +220,36 @@ import { formatDateTime } from '../../core/utils/date.util';
       gap: 1rem;
     }
 
+    .scanner-form {
+      display: grid;
+      gap: 0.75rem;
+      margin: 0.85rem 0 0;
+    }
+
+    .renewal-match {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      margin: 1rem 0;
+      padding: 1rem;
+      border-radius: 1rem;
+      background: rgba(47, 95, 62, 0.08);
+    }
+
+    .notice {
+      margin: 0.9rem 0;
+      padding: 0.85rem 1rem;
+      border-radius: 1rem;
+      background: rgba(47, 95, 62, 0.08);
+      color: var(--brand-strong);
+      font-weight: 600;
+    }
+
+    .renewals-list {
+      margin-top: 1rem;
+    }
+
     .numbers {
       text-align: right;
     }
@@ -186,7 +265,11 @@ export class CashDetailsPageComponent {
   private readonly cashSessionService = inject(CashSessionService);
   private readonly saleService = inject(SaleService);
   private readonly syncService = inject(FirebaseSyncService);
+  private readonly ticketRenewalService = inject(TicketRenewalService);
   readonly sessionId = this.route.snapshot.paramMap.get('id') ?? '';
+  readonly ticketCode = signal('');
+  readonly scanMessage = signal('');
+  readonly matchedSale = signal<ReturnType<TicketRenewalService['findSaleByCode']>>(null);
   readonly session = computed(() => {
     const localSession = this.cashSessionService.getSessionById(this.sessionId);
     if (localSession?.status === 'open') {
@@ -203,6 +286,12 @@ export class CashDetailsPageComponent {
     const remoteSales = this.syncService.getHistorySalesBySession(this.sessionId);
     return remoteSales.length ? remoteSales : this.saleService.getSalesBySession(this.sessionId);
   });
+  readonly sessionRenewals = computed(() =>
+    this.ticketRenewalService
+      .allRenewals()
+      .filter((renewal) => renewal.cashSessionId === this.sessionId)
+      .slice(0, 12)
+  );
 
   formatMoney(value: number): string {
     return centsToCurrency(value);
@@ -239,5 +328,32 @@ export class CashDetailsPageComponent {
 
   async reprint(saleId: string): Promise<void> {
     await this.saleService.reprintSale(saleId);
+  }
+
+  lookupTicket(): void {
+    const match = this.ticketRenewalService.findSaleByCode(this.ticketCode());
+    if (match && match.sale.cashSessionId !== this.sessionId) {
+      this.matchedSale.set(null);
+      this.scanMessage.set('Esse ticket pertence a outro caixa.');
+      return;
+    }
+
+    this.matchedSale.set(match);
+    this.scanMessage.set(match ? '' : 'Nenhum ticket encontrado para esse codigo.');
+  }
+
+  async renewTicket(): Promise<void> {
+    try {
+      const renewal = await this.ticketRenewalService.renewByCode(this.ticketCode());
+      if (renewal.cashSessionId !== this.sessionId) {
+        this.scanMessage.set('Esse ticket pertence a outro caixa.');
+        return;
+      }
+
+      this.scanMessage.set(`Ticket ${renewal.ticketNumber} renovado com sucesso.`);
+      this.matchedSale.set(this.ticketRenewalService.findSaleByCode(this.ticketCode()));
+    } catch (error) {
+      this.scanMessage.set(error instanceof Error ? error.message : 'Nao foi possivel renovar o ticket.');
+    }
   }
 }

@@ -9,44 +9,56 @@ interface TicketBuildOptions {
   headerTag?: string;
 }
 
-export function buildTicketText(
+interface TicketTextSections {
+  beforeQr: string;
+  afterQr: string;
+}
+
+export function buildTicketTextSections(
   sale: Sale,
   session: CashSession,
   settings: AppSettings,
   options: TicketBuildOptions = {}
-): string {
-  const lines: string[] = [];
+): TicketTextSections {
+  const beforeQrLines: string[] = [];
+  const afterQrLines: string[] = [];
 
-  lines.push(...formatHeaderLines(settings.canteenName));
+  beforeQrLines.push(...formatHeaderLines(settings.canteenName));
   if (options.headerTag) {
-    lines.push(centerText(options.headerTag));
+    beforeQrLines.push(centerText(options.headerTag));
   } else if (options.isReprint) {
-    lines.push(centerText('SEGUNDA VIA'));
+    beforeQrLines.push(centerText('SEGUNDA VIA'));
   }
 
-  lines.push(separator());
-  lines.push(`Ticket: ${sale.ticketNumber}`);
-  lines.push(`Data: ${sanitizeTicketText(formatDateTime(sale.createdAt))}`);
-  lines.push(`Operador: ${sanitizeTicketText(session.operatorName)}`);
-  lines.push(separator());
+  beforeQrLines.push(separator());
+  beforeQrLines.push(`Ticket: ${sale.ticketNumber}`);
+  beforeQrLines.push(`Data: ${sanitizeTicketText(formatDateTime(sale.createdAt))}`);
+  beforeQrLines.push(`Operador: ${sanitizeTicketText(session.operatorName)}`);
+  beforeQrLines.push(separator());
 
   for (const item of sale.items) {
-    lines.push(...formatSaleItem(item));
+    beforeQrLines.push(...formatSaleItem(item));
   }
 
-  lines.push(separator());
-  lines.push(formatMoneyRow('TOTAL', sale.total));
-  lines.push(`Pagamento: ${paymentLabel(sale.paymentMethod)}`);
+  beforeQrLines.push(separator());
+  beforeQrLines.push(formatMoneyRow('TOTAL', sale.total));
+  beforeQrLines.push(`Pagamento: ${paymentLabel(sale.paymentMethod)}`);
   if (sale.noteCustomerName) {
-    lines.push(`Nota em nome de: ${sanitizeTicketText(sale.noteCustomerName)}`);
+    beforeQrLines.push(`Nota em nome de: ${sanitizeTicketText(sale.noteCustomerName)}`);
   }
-  lines.push(`Codigo: ${buildTicketQrPayload(sale)}`);
-  lines.push('');
-  lines.push(sanitizeTicketText(settings.ticketFooterMessage));
-  lines.push('');
-  lines.push('');
+  beforeQrLines.push('');
 
-  return sanitizeTicketText(lines.join('\n'));
+  afterQrLines.push('');
+  afterQrLines.push(wrapTicketCode(buildTicketQrPayload(sale)));
+  afterQrLines.push('');
+  afterQrLines.push(sanitizeTicketText(settings.ticketFooterMessage));
+  afterQrLines.push('');
+  afterQrLines.push('');
+
+  return {
+    beforeQr: sanitizeTicketText(beforeQrLines.join('\n')),
+    afterQr: sanitizeTicketText(afterQrLines.join('\n'))
+  };
 }
 
 export function buildTicketQrPayload(sale: Pick<Sale, 'ticketToken'>): string {
@@ -107,6 +119,19 @@ function formatHeaderLines(value: string): string[] {
 
 function separator(): string {
   return '-'.repeat(LINE_WIDTH);
+}
+
+function wrapTicketCode(value: string): string {
+  if (value.length <= LINE_WIDTH) {
+    return value;
+  }
+
+  const breakIndex = value.lastIndexOf('-', LINE_WIDTH);
+  if (breakIndex <= 0) {
+    return `${value.slice(0, LINE_WIDTH)}\n${value.slice(LINE_WIDTH)}`;
+  }
+
+  return `${value.slice(0, breakIndex + 1)}\n${value.slice(breakIndex + 1)}`;
 }
 
 function paymentLabel(paymentMethod: PaymentMethod): string {

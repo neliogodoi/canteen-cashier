@@ -1,7 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { AppSettings, CashSession, PrinterConnectionStatus, Sale } from '../models/app.models';
-import { buildTicketQrPayload, buildTicketText } from '../utils/ticket.util';
+import { buildTicketQrPayload, buildTicketTextSections } from '../utils/ticket.util';
 import { SettingsService } from './settings.service';
 
 interface BluetoothCharacteristicLike {
@@ -142,8 +142,8 @@ export class PrinterService {
 
   async printSale(sale: Sale, session: CashSession, options: PrintSaleOptions = {}): Promise<boolean> {
     try {
-      const text = buildTicketText(sale, session, this.settings(), options);
-      await this.printText(text, buildTicketQrPayload(sale));
+      const sections = buildTicketTextSections(sale, session, this.settings(), options);
+      await this.printText(sections.beforeQr, buildTicketQrPayload(sale), sections.afterQr);
       return true;
     } catch (error) {
       this.status.set('error');
@@ -152,9 +152,9 @@ export class PrinterService {
     }
   }
 
-  async printText(text: string, qrPayload?: string): Promise<void> {
+  async printText(text: string, qrPayload?: string, trailingText = ''): Promise<void> {
     const characteristic = await this.ensureWritableCharacteristic();
-    const payload = this.buildEscPosBytes(text, qrPayload);
+    const payload = this.buildEscPosBytes(text, qrPayload, trailingText);
 
     for (let index = 0; index < payload.length; index += 180) {
       await characteristic.writeValueWithoutResponse(payload.slice(index, index + 180));
@@ -208,16 +208,19 @@ export class PrinterService {
     throw new Error('Nenhuma caracteristica gravavel foi encontrada na impressora selecionada.');
   }
 
-  private buildEscPosBytes(text: string, qrPayload?: string): Uint8Array {
+  private buildEscPosBytes(text: string, qrPayload?: string, trailingText = ''): Uint8Array {
     const init = new Uint8Array([0x1b, 0x40]);
     const center = new Uint8Array([0x1b, 0x61, 0x01]);
     const left = new Uint8Array([0x1b, 0x61, 0x00]);
     const normal = new Uint8Array([0x1b, 0x45, 0x00]);
     const cut = new Uint8Array([0x1d, 0x56, 0x41, 0x10]);
     const body = this.textEncoder.encode(text.replace(/\n/g, '\r\n'));
+    const tail = trailingText
+      ? this.textEncoder.encode(trailingText.replace(/\n/g, '\r\n'))
+      : new Uint8Array();
     const qr = qrPayload ? this.buildQrCodeBytes(qrPayload) : new Uint8Array();
 
-    return concatUint8Arrays(init, center, normal, left, body, qr, cut);
+    return concatUint8Arrays(init, center, normal, left, body, qr, left, tail, cut);
   }
 
   private buildQrCodeBytes(value: string): Uint8Array {

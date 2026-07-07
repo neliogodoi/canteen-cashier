@@ -5,7 +5,6 @@ import { LoginPageComponent } from './features/auth/login-page.component';
 import { CashDetailsPageComponent } from './features/history/cash-details-page.component';
 import { HistoryPageComponent } from './features/history/history-page.component';
 import { MonthlyReportPageComponent } from './features/history/monthly-report-page.component';
-import { TicketRenewalPageComponent } from './features/history/ticket-renewal-page.component';
 import { HomePageComponent } from './features/home/home-page.component';
 import { OpenCashPageComponent } from './features/open-cash/open-cash-page.component';
 import { ProductFormPageComponent } from './features/products/product-form-page.component';
@@ -25,7 +24,6 @@ export const routes: Routes = [
   { path: 'cash/:id', component: CashDetailsPageComponent, canActivate: [authGuard] },
   { path: 'cash/:id/close', component: CloseCashPageComponent, canActivate: [authGuard] },
   { path: 'history', component: HistoryPageComponent, canActivate: [authGuard] },
-  { path: 'tickets/renew', component: TicketRenewalPageComponent, canActivate: [authGuard] },
   { path: 'reports/monthly', component: MonthlyReportPageComponent, canActivate: [authGuard] },
   { path: '**', redirectTo: 'home' }
 ];
