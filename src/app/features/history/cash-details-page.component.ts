@@ -1,14 +1,14 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 
-import { CashSessionService } from '../../core/services/cash-session.service';
 import { Sale } from '../../core/models/app.models';
+import { CashSessionService } from '../../core/services/cash-session.service';
 import { FirebaseSyncService } from '../../core/services/firebase-sync.service';
 import { SaleService } from '../../core/services/sale.service';
 import { TicketRenewalService } from '../../core/services/ticket-renewal.service';
-import { centsToCurrency } from '../../core/utils/money.util';
 import { formatDateTime } from '../../core/utils/date.util';
+import { centsToCurrency } from '../../core/utils/money.util';
 
 @Component({
   selector: 'app-cash-details-page',
@@ -53,6 +53,74 @@ import { formatDateTime } from '../../core/utils/date.util';
             <span>Nota</span>
             <strong>{{ formatMoney(currentSession.totals.noteTotal) }}</strong>
           </article>
+        </div>
+      </section>
+
+      <section class="card renewal-card">
+        <div class="renewal-head">
+          <div>
+            <h2>Renovar ticket</h2>
+            <p class="muted">Escaneie o QR do ticket deste caixa e renove sem digitar.</p>
+          </div>
+        </div>
+
+        <div class="scanner-actions">
+          <button type="button" class="button" [disabled]="scannerBusy()" (click)="toggleScanner()">
+            {{ scannerActive() ? 'Parar camera' : 'Escanear ticket' }}
+          </button>
+        </div>
+
+        @if (!canUseCameraScanner()) {
+          <p class="muted scanner-hint">A camera do navegador nao esta disponivel neste dispositivo.</p>
+        }
+
+        @if (scannerActive()) {
+          <div class="scanner-preview">
+            <video #scannerVideo autoplay muted playsinline></video>
+          </div>
+          <p class="muted scanner-hint">Aponte a camera para o QR do ticket.</p>
+        }
+
+        <div class="scanner-form">
+          <input
+            type="text"
+            placeholder="CC:token-do-ticket"
+            [ngModel]="ticketCode()"
+            (ngModelChange)="ticketCode.set($event)"
+          />
+          <button type="button" class="button ghost" (click)="lookupTicket()">Usar codigo manual</button>
+        </div>
+
+        @if (scanMessage()) {
+          <p class="notice">{{ scanMessage() }}</p>
+        }
+
+        @if (matchedSale(); as match) {
+          <div class="renewal-match">
+            <div>
+              <strong>{{ match.sale.ticketNumber }}</strong>
+              <small>{{ formatDate(match.sale.createdAt) }}</small>
+            </div>
+            <div class="numbers">
+              <small>{{ paymentLabel(match.sale.paymentMethod) }}</small>
+              <strong>{{ formatMoney(match.sale.total) }}</strong>
+            </div>
+          </div>
+          <button type="button" class="button" (click)="renewTicket()">Renovar e imprimir</button>
+        }
+
+        <div class="rows renewals-list">
+          @for (renewal of sessionRenewals(); track renewal.id) {
+            <div class="row">
+              <div>
+                <strong>{{ renewal.ticketNumber }}</strong>
+                <small>{{ renewal.operatorName }}</small>
+              </div>
+              <small>{{ formatDate(renewal.renewedAt) }}</small>
+            </div>
+          } @empty {
+            <p class="muted">Nenhuma renovacao registrada neste caixa.</p>
+          }
         </div>
       </section>
 
@@ -103,53 +171,6 @@ import { formatDateTime } from '../../core/utils/date.util';
             }
           </div>
         </article>
-
-        <article class="card">
-          <h2>Renovar ticket</h2>
-          <p class="muted">Escaneie o QR ou cole o codigo de um ticket deste caixa.</p>
-
-          <div class="scanner-form">
-            <input
-              type="text"
-              placeholder="CC:token-do-ticket"
-              [ngModel]="ticketCode()"
-              (ngModelChange)="ticketCode.set($event)"
-            />
-            <button type="button" class="button secondary" (click)="lookupTicket()">Buscar ticket</button>
-          </div>
-
-          @if (scanMessage()) {
-            <p class="notice">{{ scanMessage() }}</p>
-          }
-
-          @if (matchedSale(); as match) {
-            <div class="renewal-match">
-              <div>
-                <strong>{{ match.sale.ticketNumber }}</strong>
-                <small>{{ formatDate(match.sale.createdAt) }}</small>
-              </div>
-              <div class="numbers">
-                <small>{{ paymentLabel(match.sale.paymentMethod) }}</small>
-                <strong>{{ formatMoney(match.sale.total) }}</strong>
-              </div>
-            </div>
-            <button type="button" class="button" (click)="renewTicket()">Renovar e imprimir</button>
-          }
-
-          <div class="rows renewals-list">
-            @for (renewal of sessionRenewals(); track renewal.id) {
-              <div class="row">
-                <div>
-                  <strong>{{ renewal.ticketNumber }}</strong>
-                  <small>{{ renewal.operatorName }}</small>
-                </div>
-                <small>{{ formatDate(renewal.renewedAt) }}</small>
-              </div>
-            } @empty {
-              <p class="muted">Nenhuma renovacao registrada neste caixa.</p>
-            }
-          </div>
-        </article>
       </section>
     } @else {
       <section class="card">
@@ -160,6 +181,7 @@ import { formatDateTime } from '../../core/utils/date.util';
   `,
   styles: `
     .header,
+    .renewal-head,
     .row {
       display: flex;
       justify-content: space-between;
@@ -167,7 +189,8 @@ import { formatDateTime } from '../../core/utils/date.util';
       gap: 1rem;
     }
 
-    .header {
+    .header,
+    .renewal-head {
       margin-bottom: 1rem;
       flex-wrap: wrap;
     }
@@ -182,7 +205,8 @@ import { formatDateTime } from '../../core/utils/date.util';
     }
 
     h1,
-    h2 {
+    h2,
+    p {
       margin: 0;
     }
 
@@ -209,6 +233,10 @@ import { formatDateTime } from '../../core/utils/date.util';
       display: block;
     }
 
+    .renewal-card {
+      margin-top: 1rem;
+    }
+
     .details-grid {
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
       margin-top: 1rem;
@@ -220,10 +248,36 @@ import { formatDateTime } from '../../core/utils/date.util';
       gap: 1rem;
     }
 
+    .scanner-actions {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-top: 0.5rem;
+    }
+
+    .scanner-preview {
+      overflow: hidden;
+      margin-top: 1rem;
+      border-radius: 1rem;
+      border: 1px solid rgba(53, 94, 71, 0.12);
+      background: rgba(23, 25, 25, 0.92);
+    }
+
+    .scanner-preview video {
+      display: block;
+      width: 100%;
+      max-height: 22rem;
+      object-fit: cover;
+    }
+
+    .scanner-hint {
+      margin-top: 0.75rem;
+    }
+
     .scanner-form {
       display: grid;
       gap: 0.75rem;
-      margin: 0.85rem 0 0;
+      margin-top: 0.85rem;
     }
 
     .renewal-match {
@@ -250,6 +304,10 @@ import { formatDateTime } from '../../core/utils/date.util';
       margin-top: 1rem;
     }
 
+    .renewal-card .button {
+      width: auto;
+    }
+
     .numbers {
       text-align: right;
     }
@@ -258,18 +316,38 @@ import { formatDateTime } from '../../core/utils/date.util';
       color: #9b2f19;
       font-weight: 700;
     }
+
+    @media (max-width: 640px) {
+      .scanner-actions .button,
+      .renewal-card .button {
+        width: 100%;
+      }
+
+      .renewal-match {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
   `
 })
 export class CashDetailsPageComponent {
+  private readonly videoElement = viewChild<ElementRef<HTMLVideoElement>>('scannerVideo');
   private readonly route = inject(ActivatedRoute);
   private readonly cashSessionService = inject(CashSessionService);
   private readonly saleService = inject(SaleService);
   private readonly syncService = inject(FirebaseSyncService);
   private readonly ticketRenewalService = inject(TicketRenewalService);
+  private readonly barcodeDetector = createBarcodeDetector();
+  private scannerStream: MediaStream | null = null;
+  private scannerFrameId = 0;
+
   readonly sessionId = this.route.snapshot.paramMap.get('id') ?? '';
   readonly ticketCode = signal('');
   readonly scanMessage = signal('');
   readonly matchedSale = signal<ReturnType<TicketRenewalService['findSaleByCode']>>(null);
+  readonly scannerActive = signal(false);
+  readonly scannerBusy = signal(false);
+  readonly canUseCameraScanner = signal(canUseCameraScanner());
   readonly session = computed(() => {
     const localSession = this.cashSessionService.getSessionById(this.sessionId);
     if (localSession?.status === 'open') {
@@ -330,6 +408,15 @@ export class CashDetailsPageComponent {
     await this.saleService.reprintSale(saleId);
   }
 
+  async toggleScanner(): Promise<void> {
+    if (this.scannerActive()) {
+      this.stopScanner();
+      return;
+    }
+
+    await this.startScanner();
+  }
+
   lookupTicket(): void {
     const match = this.ticketRenewalService.findSaleByCode(this.ticketCode());
     if (match && match.sale.cashSessionId !== this.sessionId) {
@@ -356,4 +443,112 @@ export class CashDetailsPageComponent {
       this.scanMessage.set(error instanceof Error ? error.message : 'Nao foi possivel renovar o ticket.');
     }
   }
+
+  private async startScanner(): Promise<void> {
+    if (!this.canUseCameraScanner()) {
+      this.scanMessage.set('A camera do navegador nao esta disponivel neste dispositivo.');
+      return;
+    }
+
+    if (!this.barcodeDetector) {
+      this.scanMessage.set('Leitura de QR nao esta disponivel neste navegador.');
+      return;
+    }
+
+    this.scanMessage.set('');
+    this.scannerBusy.set(true);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' }
+        },
+        audio: false
+      });
+
+      this.scannerStream = stream;
+      this.scannerActive.set(true);
+      queueMicrotask(() => {
+        const video = this.videoElement()?.nativeElement;
+        if (!video || !this.scannerStream) {
+          return;
+        }
+
+        video.srcObject = this.scannerStream;
+        void video.play().then(() => this.scanFrameLoop());
+      });
+    } catch (error) {
+      this.scanMessage.set(error instanceof Error ? error.message : 'Nao foi possivel abrir a camera.');
+      this.stopScanner();
+    } finally {
+      this.scannerBusy.set(false);
+    }
+  }
+
+  private stopScanner(): void {
+    if (this.scannerFrameId) {
+      cancelAnimationFrame(this.scannerFrameId);
+      this.scannerFrameId = 0;
+    }
+
+    const video = this.videoElement()?.nativeElement;
+    if (video) {
+      video.pause();
+      video.srcObject = null;
+    }
+
+    this.scannerStream?.getTracks().forEach((track) => track.stop());
+    this.scannerStream = null;
+    this.scannerActive.set(false);
+    this.scannerBusy.set(false);
+  }
+
+  private scanFrameLoop(): void {
+    if (!this.scannerActive() || !this.barcodeDetector) {
+      return;
+    }
+
+    const video = this.videoElement()?.nativeElement;
+    if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      this.scannerFrameId = requestAnimationFrame(() => this.scanFrameLoop());
+      return;
+    }
+
+    void this.barcodeDetector
+      .detect(video)
+      .then((barcodes) => {
+        const rawValue = barcodes[0]?.rawValue?.trim();
+        if (rawValue) {
+          this.ticketCode.set(rawValue);
+          this.lookupTicket();
+          this.stopScanner();
+          return;
+        }
+
+        this.scannerFrameId = requestAnimationFrame(() => this.scanFrameLoop());
+      })
+      .catch(() => {
+        this.scannerFrameId = requestAnimationFrame(() => this.scanFrameLoop());
+      });
+  }
+}
+
+interface BarcodeDetectorLike {
+  detect(source: ImageBitmapSource): Promise<Array<{ rawValue?: string }>>;
+}
+
+function canUseCameraScanner(): boolean {
+  return typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getUserMedia === 'function';
+}
+
+function createBarcodeDetector(): BarcodeDetectorLike | null {
+  const barcodeGlobal = globalThis as typeof globalThis & {
+    BarcodeDetector?: new (options?: { formats?: string[] }) => BarcodeDetectorLike;
+  };
+
+  if (typeof globalThis === 'undefined' || !barcodeGlobal.BarcodeDetector) {
+    return null;
+  }
+
+  return new barcodeGlobal.BarcodeDetector({ formats: ['qr_code'] });
 }
