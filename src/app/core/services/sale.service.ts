@@ -90,8 +90,6 @@ export class SaleService {
 
     this.sales.update((items) => [...items, sale]);
     this.persist();
-    this.syncService.markSalePending(sale.id);
-    this.syncService.enqueueSaleCreated();
     return sale;
   }
 
@@ -117,8 +115,6 @@ export class SaleService {
 
     this.sales.update((items) => items.map((sale) => (sale.id === saleId ? updatedSale : sale)));
     this.persist();
-    this.syncService.markSalePending(updatedSale.id);
-    this.syncService.enqueueSaleReprinted();
     return updatedSale;
   }
 

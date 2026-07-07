@@ -3,7 +3,7 @@ import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 
 import { PaymentMethod, Sale } from '../../core/models/app.models';
-import { SaleService } from '../../core/services/sale.service';
+import { FirebaseSyncService } from '../../core/services/firebase-sync.service';
 import { centsToCurrency } from '../../core/utils/money.util';
 
 @Component({
@@ -231,9 +231,9 @@ import { centsToCurrency } from '../../core/utils/money.util';
   `
 })
 export class MonthlyReportPageComponent {
-  private readonly saleService = inject(SaleService);
+  private readonly syncService = inject(FirebaseSyncService);
   readonly selectedMonth = signal(currentMonthValue());
-  readonly sales = computed(() => this.saleService.getAllSales());
+  readonly sales = computed(() => this.syncService.getAllHistorySales());
   readonly report = computed(() => buildMonthlyReport(this.sales(), this.selectedMonth()));
 
   formatMoney(value: number): string {

@@ -3,6 +3,7 @@ import { ActivatedRoute, RouterLink } from '@angular/router';
 
 import { CashSessionService } from '../../core/services/cash-session.service';
 import { Sale } from '../../core/models/app.models';
+import { FirebaseSyncService } from '../../core/services/firebase-sync.service';
 import { SaleService } from '../../core/services/sale.service';
 import { centsToCurrency } from '../../core/utils/money.util';
 import { formatDateTime } from '../../core/utils/date.util';
@@ -184,9 +185,24 @@ export class CashDetailsPageComponent {
   private readonly route = inject(ActivatedRoute);
   private readonly cashSessionService = inject(CashSessionService);
   private readonly saleService = inject(SaleService);
+  private readonly syncService = inject(FirebaseSyncService);
   readonly sessionId = this.route.snapshot.paramMap.get('id') ?? '';
-  readonly session = computed(() => this.cashSessionService.getSessionById(this.sessionId));
-  readonly sales = computed(() => this.saleService.getSalesBySession(this.sessionId));
+  readonly session = computed(() => {
+    const localSession = this.cashSessionService.getSessionById(this.sessionId);
+    if (localSession?.status === 'open') {
+      return localSession;
+    }
+
+    return this.syncService.getHistorySessionById(this.sessionId) ?? localSession;
+  });
+  readonly sales = computed(() => {
+    if (this.session()?.status === 'open') {
+      return this.saleService.getSalesBySession(this.sessionId);
+    }
+
+    const remoteSales = this.syncService.getHistorySalesBySession(this.sessionId);
+    return remoteSales.length ? remoteSales : this.saleService.getSalesBySession(this.sessionId);
+  });
 
   formatMoney(value: number): string {
     return centsToCurrency(value);

@@ -1,7 +1,7 @@
 import { Component, computed, inject } from '@angular/core';
 import { RouterLink } from '@angular/router';
 
-import { CashSessionService } from '../../core/services/cash-session.service';
+import { FirebaseSyncService } from '../../core/services/firebase-sync.service';
 import { centsToCurrency } from '../../core/utils/money.util';
 import { formatDateTime } from '../../core/utils/date.util';
 
@@ -114,8 +114,8 @@ import { formatDateTime } from '../../core/utils/date.util';
   `
 })
 export class HistoryPageComponent {
-	private readonly cashSessionService = inject(CashSessionService);
-	readonly sessions = computed(() => this.cashSessionService.getAllSessions());
+	private readonly syncService = inject(FirebaseSyncService);
+	readonly sessions = computed(() => this.syncService.getHistorySessions());
 
 	formatMoney(value: number): string {
 		return centsToCurrency(value);

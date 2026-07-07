@@ -48,6 +48,12 @@ interface PendingSyncState {
 const SYNC_META_KEY = 'cc.sync.meta';
 const SYNC_QUEUE_KEY = 'cc.sync.queue';
 const SYNC_PENDING_KEY = 'cc.sync.pending';
+const PRODUCTS_KEY = 'cc.products';
+const SESSIONS_KEY = 'cc.sessions';
+const SALES_KEY = 'cc.sales';
+const SETTINGS_KEY = 'cc.settings';
+const REMOTE_HISTORY_SESSIONS_KEY = 'cc.remote.sessions';
+const REMOTE_HISTORY_SALES_KEY = 'cc.remote.sales';
 const EMPTY_META: SyncCollectionMeta = {
   lastPulledAt: '',
   lastPushedAt: ''
@@ -72,6 +78,8 @@ export class FirebaseSyncService {
   readonly lastSyncAt = signal('');
   readonly lastError = signal('');
   readonly queueSize = signal(0);
+  readonly historySessions = signal<CashSession[]>([]);
+  readonly historySales = signal<Sale[]>([]);
 
   private app: FirebaseApp | null = null;
   private firestore: Firestore | null = null;
@@ -96,7 +104,11 @@ export class FirebaseSyncService {
       }
     });
     this.queue = this.storage.getItem<SyncQueueItem[]>(SYNC_QUEUE_KEY, []);
-    this.pendingState = normalizePendingState(this.storage.getItem<PendingSyncState>(SYNC_PENDING_KEY, EMPTY_PENDING_STATE));
+    this.pendingState = this.storage.hasItem(SYNC_PENDING_KEY)
+      ? normalizePendingState(this.storage.getItem<PendingSyncState>(SYNC_PENDING_KEY, EMPTY_PENDING_STATE))
+      : this.buildInitialPendingState();
+    this.historySessions.set(this.storage.getItem<CashSession[]>(REMOTE_HISTORY_SESSIONS_KEY, []));
+    this.historySales.set(this.storage.getItem<Sale[]>(REMOTE_HISTORY_SALES_KEY, []));
     this.queueSize.set(this.queue.length);
 
     effect(
@@ -175,6 +187,42 @@ export class FirebaseSyncService {
 
   enqueueSettingsChanged(): void {
     this.enqueue(['settings'], 'settings_changed');
+  }
+
+  prepareClosedSessionExport(sessionId: string): void {
+    const cashSessionService = this.injector.get(CashSessionService);
+    const saleService = this.injector.get(SaleService);
+    const session = cashSessionService.getSessionById(sessionId);
+    if (!session || session.status !== 'closed') {
+      return;
+    }
+
+    this.markCashSessionPending(session.id);
+    for (const sale of saleService.getSalesBySession(sessionId)) {
+      this.markSalePending(sale.id);
+    }
+
+    this.enqueue(['cashSessions', 'sales'], 'cash_closed');
+  }
+
+  getHistorySessions(): CashSession[] {
+    return [...this.historySessions()]
+      .filter((session) => session.status === 'closed')
+      .sort((a, b) => b.openedAt.localeCompare(a.openedAt));
+  }
+
+  getHistorySessionById(sessionId: string): CashSession | undefined {
+    return this.historySessions().find((session) => session.id === sessionId);
+  }
+
+  getHistorySalesBySession(sessionId: string): Sale[] {
+    return this.historySales()
+      .filter((sale) => sale.cashSessionId === sessionId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  getAllHistorySales(): Sale[] {
+    return [...this.historySales()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   markProductPending(productId: string): void {
@@ -345,7 +393,7 @@ export class FirebaseSyncService {
     const cashSessionService = this.injector.get(CashSessionService);
     const sessions = cashSessionService.getAllSessions();
     const pendingIds = this.pendingIds('cashSessions');
-    const pending = sessions.filter((item) => pendingIds.has(item.id));
+    const pending = sessions.filter((item) => pendingIds.has(item.id) && item.status === 'closed');
     this.log('pushCashSessions', {
       total: sessions.length,
       pending: pending.length,
@@ -368,7 +416,6 @@ export class FirebaseSyncService {
   }
 
   private async pullCashSessions(db: Firestore, runtime: FirebaseRuntime, forceFull = false): Promise<void> {
-    const cashSessionService = this.injector.get(CashSessionService);
     const snapshot = await runtime.getDocs(
       buildIncrementalQuery(
         this.cashSessionsCollection(db, runtime),
@@ -382,20 +429,25 @@ export class FirebaseSyncService {
       forceFull,
       lastPulledAt: this.meta('cashSessions').lastPulledAt
     });
-    const merged = reconcileRemoteFirst(
-      cashSessionService.getAllSessions(),
-      remoteSessions,
-      this.pendingIds('cashSessions')
-    );
-    cashSessionService.replaceAllSessions(merged);
+    const merged = mergeEntities(this.historySessions(), remoteSessions);
+    this.historySessions.set(merged);
+    this.storage.setItem(REMOTE_HISTORY_SESSIONS_KEY, merged);
     this.updatePulledMeta('cashSessions', maxUpdatedAt(remoteSessions));
   }
 
   private async pushSales(db: Firestore, runtime: FirebaseRuntime, forceFull = false): Promise<void> {
     const saleService = this.injector.get(SaleService);
+    const cashSessionService = this.injector.get(CashSessionService);
     const sales = saleService.getAllSales();
     const pendingIds = this.pendingIds('sales');
-    const pending = sales.filter((item) => pendingIds.has(item.id));
+    const pending = sales.filter((item) => {
+      if (!pendingIds.has(item.id)) {
+        return false;
+      }
+
+      const session = cashSessionService.getSessionById(item.cashSessionId);
+      return session?.status === 'closed';
+    });
     this.log('pushSales', {
       total: sales.length,
       pending: pending.length,
@@ -416,7 +468,6 @@ export class FirebaseSyncService {
   }
 
   private async pullSales(db: Firestore, runtime: FirebaseRuntime, forceFull = false): Promise<void> {
-    const saleService = this.injector.get(SaleService);
     const snapshot = await runtime.getDocs(
       buildIncrementalQuery(
         this.salesCollection(db, runtime),
@@ -430,8 +481,9 @@ export class FirebaseSyncService {
       forceFull,
       lastPulledAt: this.meta('sales').lastPulledAt
     });
-    const merged = reconcileRemoteFirst(saleService.getAllSales(), remoteSales, this.pendingIds('sales'));
-    saleService.replaceAllSales(merged);
+    const merged = mergeEntities(this.historySales(), remoteSales);
+    this.historySales.set(merged);
+    this.storage.setItem(REMOTE_HISTORY_SALES_KEY, merged);
     this.updatePulledMeta('sales', maxUpdatedAt(remoteSales));
   }
 
@@ -553,6 +605,23 @@ export class FirebaseSyncService {
 
   private persistMeta(): void {
     this.storage.setItem(SYNC_META_KEY, this.metadata);
+  }
+
+  private buildInitialPendingState(): PendingSyncState {
+    const pendingState = normalizePendingState({
+      products: [],
+      cashSessions: this.storage
+        .getItem<Array<{ id: string; status?: string }>>(SESSIONS_KEY, [])
+        .filter((session) => session.status === 'closed')
+        .map((session) => session.id),
+      sales: this.storage
+        .getItem<Array<{ id: string }>>(SALES_KEY, [])
+        .map((sale) => sale.id),
+      settings: this.storage.hasItem(SETTINGS_KEY)
+    });
+
+    this.storage.setItem(SYNC_PENDING_KEY, pendingState);
+    return pendingState;
   }
 
   private pendingIds(collectionName: Extract<SyncCollectionName, 'products' | 'cashSessions' | 'sales'>): Set<string> {
@@ -693,6 +762,23 @@ function reconcileRemoteFirst<T extends { id: string; updatedAt: string }>(
     const remoteItem = merged.get(localItem.id);
     if (!remoteItem || compareUpdatedAt(localItem.updatedAt, remoteItem.updatedAt) >= 0) {
       merged.set(localItem.id, localItem);
+    }
+  }
+
+  return [...merged.values()];
+}
+
+function mergeEntities<T extends { id: string; updatedAt: string }>(localItems: T[], remoteItems: T[]): T[] {
+  const merged = new Map<string, T>();
+
+  for (const item of localItems) {
+    merged.set(item.id, item);
+  }
+
+  for (const item of remoteItems) {
+    const current = merged.get(item.id);
+    if (!current || compareUpdatedAt(item.updatedAt, current.updatedAt) > 0) {
+      merged.set(item.id, item);
     }
   }
 
