@@ -54,6 +54,7 @@ export function buildTicketTextSections(
   afterQrLines.push(sanitizeTicketText(settings.ticketFooterMessage));
   afterQrLines.push('');
   afterQrLines.push('');
+  afterQrLines.push('');
 
   return {
     beforeQr: sanitizeTicketText(beforeQrLines.join('\n')),
