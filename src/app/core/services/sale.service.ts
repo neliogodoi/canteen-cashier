@@ -10,6 +10,7 @@ import { StorageService } from './storage.service';
 const SALES_KEY = 'cc.sales';
 type LegacySale = Omit<Sale, 'paymentMethod'> & {
   paymentMethod: Sale['paymentMethod'] | 'card';
+  ticketToken?: string;
 };
 
 @Injectable({ providedIn: 'root' })
@@ -36,6 +37,10 @@ export class SaleService {
 
   getAllSales(): Sale[] {
     return [...this.sales()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  findLocalSaleByTicketToken(ticketToken: string): Sale | undefined {
+    return this.sales().find((sale) => sale.ticketToken === ticketToken);
   }
 
   async createSale(
@@ -67,6 +72,7 @@ export class SaleService {
       id: crypto.randomUUID(),
       cashSessionId: session.id,
       ticketNumber: `TKT${String(ticketSequence).padStart(3, '0')}`,
+      ticketToken: crypto.randomUUID(),
       operatorName: session.operatorName,
       items: cartItems.map((item) => ({
         productId: item.productId,
@@ -104,7 +110,7 @@ export class SaleService {
       throw new Error('Caixa da venda nao encontrado para reimpressao.');
     }
 
-    const printed = await this.printer.printSale(currentSale, session, true);
+    const printed = await this.printer.printSale(currentSale, session, { isReprint: true });
     const updatedSale: Sale = {
       ...currentSale,
       printStatus: this.resolvePrintStatus(printed),
@@ -130,6 +136,7 @@ export class SaleService {
   private normalizeSale(sale: LegacySale): Sale {
     return {
       ...sale,
+      ticketToken: sale.ticketToken || crypto.randomUUID(),
       paymentMethod: sale.paymentMethod === 'card' ? 'note' : sale.paymentMethod,
       total: toNumber(sale.total),
       items: sale.items.map((item) => ({

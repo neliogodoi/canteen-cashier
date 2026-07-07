@@ -2,17 +2,25 @@ import { AppSettings, CashSession, PaymentMethod, Sale, SaleItem } from '../mode
 import { formatDateTime } from './date.util';
 
 const LINE_WIDTH = 32;
+const TICKET_CODE_PREFIX = 'CC';
+
+interface TicketBuildOptions {
+  isReprint?: boolean;
+  headerTag?: string;
+}
 
 export function buildTicketText(
   sale: Sale,
   session: CashSession,
   settings: AppSettings,
-  isReprint = false
+  options: TicketBuildOptions = {}
 ): string {
   const lines: string[] = [];
 
   lines.push(...formatHeaderLines(settings.canteenName));
-  if (isReprint) {
+  if (options.headerTag) {
+    lines.push(centerText(options.headerTag));
+  } else if (options.isReprint) {
     lines.push(centerText('SEGUNDA VIA'));
   }
 
@@ -32,6 +40,7 @@ export function buildTicketText(
   if (sale.noteCustomerName) {
     lines.push(`Nota em nome de: ${sanitizeTicketText(sale.noteCustomerName)}`);
   }
+  lines.push(`Codigo: ${buildTicketQrPayload(sale)}`);
   lines.push(separator());
   lines.push(sanitizeTicketText(settings.ticketFooterMessage));
   lines.push('');
@@ -40,6 +49,21 @@ export function buildTicketText(
   lines.push('');
 
   return sanitizeTicketText(lines.join('\n'));
+}
+
+export function buildTicketQrPayload(sale: Pick<Sale, 'ticketToken'>): string {
+  return `${TICKET_CODE_PREFIX}:${sale.ticketToken}`;
+}
+
+export function parseTicketQrPayload(value: string): string {
+  const normalized = sanitizeTicketText(value).trim();
+  if (!normalized) {
+    return '';
+  }
+
+  return normalized.startsWith(`${TICKET_CODE_PREFIX}:`)
+    ? normalized.slice(TICKET_CODE_PREFIX.length + 1).trim()
+    : normalized;
 }
 
 function formatSaleItem(item: SaleItem): string[] {

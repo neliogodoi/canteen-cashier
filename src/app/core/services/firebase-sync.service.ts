@@ -7,7 +7,7 @@ import type {
   Firestore
 } from 'firebase/firestore';
 
-import { AppSettings, CashSession, Product, Sale } from '../models/app.models';
+import { AppSettings, CashSession, Product, Sale, TicketRenewal } from '../models/app.models';
 import { nowIso } from '../utils/date.util';
 import { AuthService } from './auth.service';
 import { defaultCanteenId, firebaseConfig } from './firebase.config';
@@ -17,7 +17,7 @@ import { CashSessionService } from './cash-session.service';
 import { SaleService } from './sale.service';
 import { SettingsService } from './settings.service';
 
-type SyncCollectionName = 'products' | 'cashSessions' | 'sales' | 'settings';
+type SyncCollectionName = 'products' | 'cashSessions' | 'sales' | 'settings' | 'ticketRenewals';
 type SyncReason =
   | 'full_sync'
   | 'cash_opened'
@@ -27,7 +27,8 @@ type SyncReason =
   | 'sale_cancelled'
   | 'production_changed'
   | 'product_changed'
-  | 'settings_changed';
+  | 'settings_changed'
+  | 'ticket_renewal_changed';
 
 interface SyncCollectionMeta {
   lastPulledAt: string;
@@ -43,6 +44,7 @@ interface PendingSyncState {
   cashSessions: string[];
   sales: string[];
   settings: boolean;
+  ticketRenewals: string[];
 }
 
 const SYNC_META_KEY = 'cc.sync.meta';
@@ -54,6 +56,8 @@ const SALES_KEY = 'cc.sales';
 const SETTINGS_KEY = 'cc.settings';
 const REMOTE_HISTORY_SESSIONS_KEY = 'cc.remote.sessions';
 const REMOTE_HISTORY_SALES_KEY = 'cc.remote.sales';
+const TICKET_RENEWALS_KEY = 'cc.ticket-renewals';
+const REMOTE_HISTORY_TICKET_RENEWALS_KEY = 'cc.remote.ticket-renewals';
 const EMPTY_META: SyncCollectionMeta = {
   lastPulledAt: '',
   lastPushedAt: ''
@@ -62,7 +66,8 @@ const EMPTY_PENDING_STATE: PendingSyncState = {
   products: [],
   cashSessions: [],
   sales: [],
-  settings: false
+  settings: false,
+  ticketRenewals: []
 };
 
 interface SyncQueueItem {
@@ -80,6 +85,7 @@ export class FirebaseSyncService {
   readonly queueSize = signal(0);
   readonly historySessions = signal<CashSession[]>([]);
   readonly historySales = signal<Sale[]>([]);
+  readonly historyTicketRenewals = signal<TicketRenewal[]>([]);
 
   private app: FirebaseApp | null = null;
   private firestore: Firestore | null = null;
@@ -100,7 +106,8 @@ export class FirebaseSyncService {
         products: { ...EMPTY_META },
         cashSessions: { ...EMPTY_META },
         sales: { ...EMPTY_META },
-        settings: { ...EMPTY_META }
+        settings: { ...EMPTY_META },
+        ticketRenewals: { ...EMPTY_META }
       }
     });
     this.queue = this.storage.getItem<SyncQueueItem[]>(SYNC_QUEUE_KEY, []);
@@ -109,6 +116,7 @@ export class FirebaseSyncService {
       : this.buildInitialPendingState();
     this.historySessions.set(this.storage.getItem<CashSession[]>(REMOTE_HISTORY_SESSIONS_KEY, []));
     this.historySales.set(this.storage.getItem<Sale[]>(REMOTE_HISTORY_SALES_KEY, []));
+    this.historyTicketRenewals.set(this.storage.getItem<TicketRenewal[]>(REMOTE_HISTORY_TICKET_RENEWALS_KEY, []));
     this.queueSize.set(this.queue.length);
 
     effect(
@@ -154,7 +162,7 @@ export class FirebaseSyncService {
   }
 
   enqueueFullSync(): void {
-    this.enqueue(['products', 'cashSessions', 'sales', 'settings'], 'full_sync');
+    this.enqueue(['products', 'cashSessions', 'sales', 'settings', 'ticketRenewals'], 'full_sync');
   }
 
   enqueueCashSessionOpened(): void {
@@ -187,6 +195,10 @@ export class FirebaseSyncService {
 
   enqueueSettingsChanged(): void {
     this.enqueue(['settings'], 'settings_changed');
+  }
+
+  enqueueTicketRenewalChanged(): void {
+    this.enqueue(['ticketRenewals'], 'ticket_renewal_changed');
   }
 
   prepareClosedSessionExport(sessionId: string): void {
@@ -225,6 +237,14 @@ export class FirebaseSyncService {
     return [...this.historySales()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
+  getHistorySaleByTicketToken(ticketToken: string): Sale | undefined {
+    return this.historySales().find((sale) => sale.ticketToken === ticketToken);
+  }
+
+  getHistoryTicketRenewals(): TicketRenewal[] {
+    return [...this.historyTicketRenewals()].sort((a, b) => b.renewedAt.localeCompare(a.renewedAt));
+  }
+
   markProductPending(productId: string): void {
     this.markPendingEntity('products', productId);
   }
@@ -247,6 +267,10 @@ export class FirebaseSyncService {
       settings: true
     };
     this.persistPendingState();
+  }
+
+  markTicketRenewalPending(renewalId: string): void {
+    this.markPendingEntity('ticketRenewals', renewalId);
   }
 
   async syncIncremental(): Promise<void> {
@@ -305,6 +329,9 @@ export class FirebaseSyncService {
         if (collections.has('settings')) {
           await this.pushSettings(db, runtime, forceFull);
         }
+        if (collections.has('ticketRenewals')) {
+          await this.pushTicketRenewals(db, runtime, forceFull);
+        }
 
         if (collections.has('products')) {
           await this.pullProducts(db, runtime, forceFull);
@@ -317,6 +344,9 @@ export class FirebaseSyncService {
         }
         if (collections.has('settings')) {
           await this.pullSettings(db, runtime);
+        }
+        if (collections.has('ticketRenewals')) {
+          await this.pullTicketRenewals(db, runtime, forceFull);
         }
 
         this.queue.shift();
@@ -508,6 +538,31 @@ export class FirebaseSyncService {
     this.updatePushedMeta('settings', settings.updatedAt);
   }
 
+  private async pushTicketRenewals(db: Firestore, runtime: FirebaseRuntime, forceFull = false): Promise<void> {
+    const pendingIds = this.pendingIds('ticketRenewals');
+    const renewals = this.storage.getItem<TicketRenewal[]>(TICKET_RENEWALS_KEY, []);
+    const pending = renewals.filter((renewal) => pendingIds.has(renewal.id));
+    this.log('pushTicketRenewals', {
+      total: renewals.length,
+      pending: pending.length,
+      forceFull,
+      pendingIds: pendingIds.size
+    });
+
+    await Promise.all(
+      pending.map((renewal) =>
+        runtime.setDoc(
+          runtime.doc(this.ticketRenewalsCollection(db, runtime), renewal.id),
+          sanitizeForFirestore(renewal),
+          { merge: true }
+        )
+      )
+    );
+
+    this.clearPendingEntities('ticketRenewals', pending.map((item) => item.id));
+    this.updatePushedMeta('ticketRenewals', maxUpdatedAt(pending));
+  }
+
   private async pullSettings(db: Firestore, runtime: FirebaseRuntime): Promise<void> {
     const settingsService = this.injector.get(SettingsService);
     const snapshot = await runtime.getDoc(this.settingsDoc(db, runtime));
@@ -528,6 +583,26 @@ export class FirebaseSyncService {
       : remoteSettings;
     settingsService.replaceSettings(winner);
     this.updatePulledMeta('settings', remoteSettings.updatedAt);
+  }
+
+  private async pullTicketRenewals(db: Firestore, runtime: FirebaseRuntime, forceFull = false): Promise<void> {
+    const snapshot = await runtime.getDocs(
+      buildIncrementalQuery(
+        this.ticketRenewalsCollection(db, runtime),
+        forceFull ? '' : this.meta('ticketRenewals').lastPulledAt,
+        runtime
+      )
+    );
+    const remoteRenewals = snapshot.docs.map((item) => item.data() as TicketRenewal);
+    this.log('pullTicketRenewals', {
+      fetched: remoteRenewals.length,
+      forceFull,
+      lastPulledAt: this.meta('ticketRenewals').lastPulledAt
+    });
+    const merged = mergeEntities(this.historyTicketRenewals(), remoteRenewals);
+    this.historyTicketRenewals.set(merged);
+    this.storage.setItem(REMOTE_HISTORY_TICKET_RENEWALS_KEY, merged);
+    this.updatePulledMeta('ticketRenewals', maxUpdatedAt(remoteRenewals));
   }
 
   private async getRuntime(): Promise<FirebaseRuntime> {
@@ -571,6 +646,10 @@ export class FirebaseSyncService {
 
   private salesCollection(db: Firestore, runtime: FirebaseRuntime) {
     return this.rootCollection(db, 'sales', runtime);
+  }
+
+  private ticketRenewalsCollection(db: Firestore, runtime: FirebaseRuntime) {
+    return this.rootCollection(db, 'ticketRenewals', runtime);
   }
 
   private settingsDoc(db: Firestore, runtime: FirebaseRuntime) {
@@ -618,18 +697,24 @@ export class FirebaseSyncService {
         .getItem<Array<{ id: string }>>(SALES_KEY, [])
         .map((sale) => sale.id),
       settings: this.storage.hasItem(SETTINGS_KEY)
+      ,
+      ticketRenewals: this.storage
+        .getItem<Array<{ id: string }>>(TICKET_RENEWALS_KEY, [])
+        .map((renewal) => renewal.id)
     });
 
     this.storage.setItem(SYNC_PENDING_KEY, pendingState);
     return pendingState;
   }
 
-  private pendingIds(collectionName: Extract<SyncCollectionName, 'products' | 'cashSessions' | 'sales'>): Set<string> {
+  private pendingIds(
+    collectionName: Extract<SyncCollectionName, 'products' | 'cashSessions' | 'sales' | 'ticketRenewals'>
+  ): Set<string> {
     return new Set(this.pendingState[collectionName]);
   }
 
   private markPendingEntity(
-    collectionName: Extract<SyncCollectionName, 'products' | 'cashSessions' | 'sales'>,
+    collectionName: Extract<SyncCollectionName, 'products' | 'cashSessions' | 'sales' | 'ticketRenewals'>,
     entityId: string
   ): void {
     const currentIds = new Set(this.pendingState[collectionName]);
@@ -646,7 +731,7 @@ export class FirebaseSyncService {
   }
 
   private clearPendingEntities(
-    collectionName: Extract<SyncCollectionName, 'products' | 'cashSessions' | 'sales'>,
+    collectionName: Extract<SyncCollectionName, 'products' | 'cashSessions' | 'sales' | 'ticketRenewals'>,
     entityIds: string[]
   ): void {
     if (!entityIds.length) {
@@ -842,7 +927,8 @@ function normalizePendingState(value: PendingSyncState): PendingSyncState {
     products: uniqueIds(value.products),
     cashSessions: uniqueIds(value.cashSessions),
     sales: uniqueIds(value.sales),
-    settings: Boolean(value.settings)
+    settings: Boolean(value.settings),
+    ticketRenewals: uniqueIds(value.ticketRenewals)
   };
 }
 

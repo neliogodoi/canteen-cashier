@@ -4,6 +4,7 @@ import { RouterLink } from '@angular/router';
 
 import { PaymentMethod, Sale } from '../../core/models/app.models';
 import { FirebaseSyncService } from '../../core/services/firebase-sync.service';
+import { TicketRenewalService } from '../../core/services/ticket-renewal.service';
 import { centsToCurrency } from '../../core/utils/money.util';
 
 @Component({
@@ -37,6 +38,10 @@ import { centsToCurrency } from '../../core/utils/money.util';
       <article class="card summary-card">
         <span>Ticket medio</span>
         <strong>{{ formatMoney(report().averageTicket) }}</strong>
+      </article>
+      <article class="card summary-card">
+        <span>Tickets renovados</span>
+        <strong>{{ report().renewedTicketsCount }}</strong>
       </article>
     </section>
 
@@ -232,17 +237,24 @@ import { centsToCurrency } from '../../core/utils/money.util';
 })
 export class MonthlyReportPageComponent {
   private readonly syncService = inject(FirebaseSyncService);
+  private readonly ticketRenewalService = inject(TicketRenewalService);
   readonly selectedMonth = signal(currentMonthValue());
   readonly sales = computed(() => this.syncService.getAllHistorySales());
-  readonly report = computed(() => buildMonthlyReport(this.sales(), this.selectedMonth()));
+  readonly renewals = computed(() => this.ticketRenewalService.allRenewals());
+  readonly report = computed(() => buildMonthlyReport(this.sales(), this.renewals(), this.selectedMonth()));
 
   formatMoney(value: number): string {
     return centsToCurrency(value);
   }
 }
 
-function buildMonthlyReport(sales: Sale[], selectedMonth: string) {
+function buildMonthlyReport(
+  sales: Sale[],
+  renewals: Array<{ renewedAt: string }>,
+  selectedMonth: string
+) {
   const filteredSales = sales.filter((sale) => sale.createdAt.slice(0, 7) === selectedMonth);
+  const filteredRenewals = renewals.filter((renewal) => renewal.renewedAt.slice(0, 7) === selectedMonth);
   const sessionIds = new Set(filteredSales.map((sale) => sale.cashSessionId));
   const grossTotal = filteredSales.reduce((sum, sale) => sum + sale.total, 0);
   const payments: Record<PaymentMethod, number> = { cash: 0, pix: 0, note: 0 };
@@ -275,6 +287,7 @@ function buildMonthlyReport(sales: Sale[], selectedMonth: string) {
     salesCount: filteredSales.length,
     sessionsCount: sessionIds.size,
     averageTicket: filteredSales.length ? Math.round(grossTotal / filteredSales.length) : 0,
+    renewedTicketsCount: filteredRenewals.length,
     payments,
     notes: filteredSales
       .filter((sale) => sale.paymentMethod === 'note')

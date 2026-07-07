@@ -62,6 +62,7 @@ export interface Sale {
   id: string;
   cashSessionId: string;
   ticketNumber: string;
+  ticketToken: string;
   operatorName: string;
   items: SaleItem[];
   paymentMethod: PaymentMethod;
@@ -72,6 +73,18 @@ export interface Sale {
   createdAt: string;
   updatedAt: string;
   reprintCount: number;
+}
+
+export interface TicketRenewal {
+  id: string;
+  saleId: string;
+  cashSessionId: string;
+  ticketNumber: string;
+  ticketToken: string;
+  operatorName: string;
+  renewedAt: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AppSettings {
