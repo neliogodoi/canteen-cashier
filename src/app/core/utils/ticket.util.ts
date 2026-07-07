@@ -41,10 +41,8 @@ export function buildTicketText(
     lines.push(`Nota em nome de: ${sanitizeTicketText(sale.noteCustomerName)}`);
   }
   lines.push(`Codigo: ${buildTicketQrPayload(sale)}`);
-  lines.push(separator());
+  lines.push('');
   lines.push(sanitizeTicketText(settings.ticketFooterMessage));
-  lines.push('');
-  lines.push('');
   lines.push('');
   lines.push('');
 
