@@ -7,7 +7,7 @@ import type {
   Firestore
 } from 'firebase/firestore';
 
-import { AppSettings, CashSession, Product, Sale, TicketRenewal } from '../models/app.models';
+import { AppSettings, CashSession, Product, Sale, SaleTicketUnit, TicketRenewal } from '../models/app.models';
 import { nowIso } from '../utils/date.util';
 import { AuthService } from './auth.service';
 import { defaultCanteenId, firebaseConfig } from './firebase.config';
@@ -237,8 +237,20 @@ export class FirebaseSyncService {
     return [...this.historySales()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
-  getHistorySaleByTicketToken(ticketToken: string): Sale | undefined {
-    return this.historySales().find((sale) => sale.ticketToken === ticketToken);
+  getHistorySaleByTicketToken(ticketToken: string): { sale: Sale; ticketUnit: SaleTicketUnit } | null {
+    for (const sale of this.historySales()) {
+      const ticketUnits = sale.ticketUnits ?? [];
+      const ticketUnit = ticketUnits.find((unit) => unit.ticketToken === ticketToken);
+      if (ticketUnit) {
+        return { sale, ticketUnit };
+      }
+
+      if (sale.ticketToken === ticketToken) {
+        return { sale, ticketUnit: buildLegacyTicketUnit(sale) };
+      }
+    }
+
+    return null;
   }
 
   getHistoryTicketRenewals(): TicketRenewal[] {
@@ -934,6 +946,23 @@ function normalizePendingState(value: PendingSyncState): PendingSyncState {
 
 function uniqueIds(ids: string[] | undefined): string[] {
   return [...new Set((ids ?? []).filter(Boolean))];
+}
+
+function buildLegacyTicketUnit(sale: Sale): SaleTicketUnit {
+  const firstItem = sale.items[0];
+  return {
+    id: `legacy-${sale.id}`,
+    saleId: sale.id,
+    saleItemIndex: 0,
+    unitIndex: 0,
+    ticketNumber: sale.ticketNumber,
+    ticketToken: sale.ticketToken,
+    productId: firstItem?.productId || sale.id,
+    productNameSnapshot: firstItem?.productNameSnapshot || 'Item',
+    unitPriceSnapshot: firstItem?.unitPriceSnapshot || sale.total,
+    createdAt: sale.createdAt,
+    updatedAt: sale.updatedAt
+  };
 }
 
 interface FirebaseRuntime {

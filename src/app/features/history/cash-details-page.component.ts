@@ -98,12 +98,13 @@ import { centsToCurrency } from '../../core/utils/money.util';
         @if (matchedSale(); as match) {
           <div class="renewal-match">
             <div>
-              <strong>{{ match.sale.ticketNumber }}</strong>
+              <strong>{{ match.ticketUnit.ticketNumber }}</strong>
+              <small>{{ match.ticketUnit.productNameSnapshot }}</small>
               <small>{{ formatDate(match.sale.createdAt) }}</small>
             </div>
             <div class="numbers">
               <small>{{ paymentLabel(match.sale.paymentMethod) }}</small>
-              <strong>{{ formatMoney(match.sale.total) }}</strong>
+              <strong>{{ formatMoney(match.ticketUnit.unitPriceSnapshot) }}</strong>
             </div>
           </div>
           <button type="button" class="button" (click)="renewTicket()">Renovar e imprimir</button>
@@ -114,6 +115,7 @@ import { centsToCurrency } from '../../core/utils/money.util';
             <div class="row">
               <div>
                 <strong>{{ renewal.ticketNumber }}</strong>
+                <small>{{ renewal.productNameSnapshot }}</small>
                 <small>{{ renewal.operatorName }}</small>
               </div>
               <small>{{ formatDate(renewal.renewedAt) }}</small>

@@ -38,18 +38,23 @@ import { formatDateTime } from '../../core/utils/date.util';
 
       <section class="layout">
         <div class="products-area">
-          @for (product of currentSession.products; track product.id) {
+          @for (product of productRows(); track productRenderKey(product)) {
             <button
               type="button"
               class="product-button"
-              [disabled]="available(product) === 0"
-              [class.low]="available(product) > 0 && available(product) <= 5"
+              [disabled]="product.available === 0"
+              [class.low]="product.available > 0 && product.available <= 5"
               (click)="addProduct(product.productId)"
             >
-              <strong>{{ product.productNameSnapshot }}</strong>
+              <div class="product-head">
+                <strong>{{ product.productNameSnapshot }}</strong>
+                @if (product.selectedQuantity > 0) {
+                  <span class="product-counter">{{ product.selectedQuantity }}</span>
+                }
+              </div>
               <span>{{ formatMoney(product.productPriceSnapshot) }}</span>
               <small>
-                {{ available(product) === 0 ? 'Esgotado' : available(product) + ' disponiveis' }}
+                {{ product.available === 0 ? 'Esgotado' : product.available + ' disponiveis' }}
               </small>
             </button>
           }
@@ -61,16 +66,16 @@ import { formatDateTime } from '../../core/utils/date.util';
             <button type="button" class="button ghost" (click)="cart.clear()">Limpar</button>
           </div>
 
-          @for (item of cart.items(); track item.productId) {
+          @for (item of cartItems(); track cartRenderKey(item)) {
             <article class="cart-item">
               <div>
                 <strong>{{ item.name }}</strong>
                 <span>{{ formatMoney(item.unitPriceInCents) }}</span>
               </div>
               <div class="qty">
-                <button type="button" class="mini" (click)="cart.decrement(item.productId)">-</button>
+                <button type="button" class="mini" (click)="decrementProduct(item.productId)">-</button>
                 <span>{{ item.quantity }}</span>
-                <button type="button" class="mini" (click)="cart.increment(currentSession, item.productId)">+</button>
+                <button type="button" class="mini" (click)="incrementProduct(item.productId)">+</button>
               </div>
             </article>
           } @empty {
@@ -114,7 +119,7 @@ import { formatDateTime } from '../../core/utils/date.util';
             <strong>{{ formatMoney(cart.totalInCents()) }}</strong>
           </div>
 
-          <button type="button" class="button" [disabled]="!cart.items().length" (click)="finishSale()">
+          <button type="button" class="button" [disabled]="!hasCartItems()" (click)="finishSale()">
             Finalizar e imprimir
           </button>
         </aside>
@@ -249,6 +254,28 @@ import { formatDateTime } from '../../core/utils/date.util';
       line-height: 1.05;
     }
 
+    .product-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 0.4rem;
+    }
+
+    .product-counter {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 1.5rem;
+      min-height: 1.5rem;
+      padding: 0 0.35rem;
+      border-radius: 999px;
+      background: rgba(47, 95, 62, 0.16);
+      color: var(--brand-strong);
+      font-size: 0.78rem;
+      font-weight: 800;
+      line-height: 1;
+    }
+
     .product-button span {
       font-size: 0.9rem;
       font-weight: 700;
@@ -371,6 +398,24 @@ export class CashRegisterPageComponent {
   private readonly router = inject(Router);
   readonly cart = inject(CartService);
   readonly session = computed(() => this.cashSessionService.getCurrentOpenSession());
+  readonly cartItems = computed(() => this.cart.items());
+  readonly hasCartItems = computed(() => this.cartItems().length > 0);
+  readonly quantityByProductId = computed(() => {
+    const quantities = new Map<string, number>();
+
+    for (const item of this.cartItems()) {
+      quantities.set(item.productId, item.quantity);
+    }
+
+    return quantities;
+  });
+  readonly productRows = computed(() =>
+    (this.session()?.products ?? []).map((product) => ({
+      ...product,
+      available: product.quantityPrepared - product.quantitySold,
+      selectedQuantity: this.quantityByProductId().get(product.productId) ?? 0
+    }))
+  );
   readonly message = signal('');
   readonly menuOpen = signal(false);
   readonly selectedPayment = signal<PaymentMethod>('cash');
@@ -381,10 +426,6 @@ export class CashRegisterPageComponent {
     { value: 'note' as const, label: 'Nota' }
   ];
 
-  available(product: { quantityPrepared: number; quantitySold: number }): number {
-    return product.quantityPrepared - product.quantitySold;
-  }
-
   formatMoney(value: number): string {
     return centsToCurrency(value);
   }
@@ -394,17 +435,26 @@ export class CashRegisterPageComponent {
   }
 
   addProduct(productId: string): void {
-    const currentSession = this.session();
-    if (!currentSession) {
-      return;
-    }
-
-    const added = this.cart.add(currentSession, productId);
+    const added = this.addWithCurrentSession(productId);
     if (!added) {
       this.message.set('Produto sem disponibilidade no momento.');
     } else {
       this.message.set('');
     }
+  }
+
+  incrementProduct(productId: string): void {
+    const added = this.addWithCurrentSession(productId);
+    if (!added) {
+      this.message.set('Produto sem disponibilidade no momento.');
+    } else {
+      this.message.set('');
+    }
+  }
+
+  decrementProduct(productId: string): void {
+    this.cart.decrement(productId);
+    this.message.set('');
   }
 
   toggleMenu(): void {
@@ -414,7 +464,7 @@ export class CashRegisterPageComponent {
   async finishSale(): Promise<void> {
     try {
       const sale = await this.saleService.createSale(
-        this.cart.items(),
+        this.cartItems(),
         this.selectedPayment(),
         this.noteCustomerName()
       );
@@ -427,5 +477,22 @@ export class CashRegisterPageComponent {
     } catch (error) {
       this.message.set(error instanceof Error ? error.message : 'Nao foi possivel concluir a venda.');
     }
+  }
+
+  cartRenderKey(item: { productId: string; quantity: number; maxAvailable: number }): string {
+    return `${item.productId}:${item.quantity}:${item.maxAvailable}`;
+  }
+
+  productRenderKey(product: { id: string; available: number; selectedQuantity: number }): string {
+    return `${product.id}:${product.available}:${product.selectedQuantity}`;
+  }
+
+  private addWithCurrentSession(productId: string): boolean {
+    const currentSession = this.session();
+    if (!currentSession) {
+      return false;
+    }
+
+    return this.cart.add(currentSession, productId);
   }
 }

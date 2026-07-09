@@ -1,4 +1,4 @@
-import { AppSettings, CashSession, PaymentMethod, Sale, SaleItem } from '../models/app.models';
+import { AppSettings, CashSession, PaymentMethod, Sale, SaleItem, SaleTicketUnit } from '../models/app.models';
 import { formatDateTime } from './date.util';
 
 const LINE_WIDTH = 32;
@@ -14,7 +14,7 @@ interface TicketTextSections {
   afterQr: string;
 }
 
-export function buildTicketTextSections(
+export function buildSaleTicketTextSections(
   sale: Sale,
   session: CashSession,
   settings: AppSettings,
@@ -62,8 +62,51 @@ export function buildTicketTextSections(
   };
 }
 
-export function buildTicketQrPayload(sale: Pick<Sale, 'ticketToken'>): string {
-  return `${TICKET_CODE_PREFIX}:${sale.ticketToken}`;
+export function buildTicketUnitTextSections(
+  sale: Sale,
+  ticketUnit: SaleTicketUnit,
+  _session: CashSession,
+  settings: AppSettings,
+  options: TicketBuildOptions = {}
+): TicketTextSections {
+  const beforeQrLines: string[] = [];
+  const afterQrLines: string[] = [];
+
+  beforeQrLines.push(centerBanner('CANTINA'));
+  beforeQrLines.push(...formatHeaderLines(settings.canteenName));
+  if (options.headerTag) {
+    beforeQrLines.push(centerText(options.headerTag));
+  } else if (options.isReprint) {
+    beforeQrLines.push(centerText('SEGUNDA VIA'));
+  }
+
+  beforeQrLines.push(`Data: ${sanitizeTicketText(formatDateTime(sale.createdAt))}`);
+  beforeQrLines.push('');
+  beforeQrLines.push(`Ticket: ${ticketUnit.ticketNumber}`);
+  beforeQrLines.push(`1x ${sanitizeTicketText(ticketUnit.productNameSnapshot)}`);
+  beforeQrLines.push(formatPrinterMoney(ticketUnit.unitPriceSnapshot));
+  beforeQrLines.push(`Pagamento: ${paymentLabel(sale.paymentMethod)}`);
+  if (sale.noteCustomerName) {
+    beforeQrLines.push(sanitizeTicketText(sale.noteCustomerName));
+  }
+  beforeQrLines.push('');
+
+  afterQrLines.push('');
+  afterQrLines.push(wrapTicketCode(buildTicketQrPayload(ticketUnit)));
+  afterQrLines.push('');
+  afterQrLines.push(sanitizeTicketText(settings.ticketFooterMessage));
+  afterQrLines.push('');
+  afterQrLines.push('');
+  afterQrLines.push('');
+
+  return {
+    beforeQr: sanitizeTicketText(beforeQrLines.join('\n')),
+    afterQr: sanitizeTicketText(afterQrLines.join('\n'))
+  };
+}
+
+export function buildTicketQrPayload(ticket: Pick<SaleTicketUnit | Sale, 'ticketToken'>): string {
+  return `${TICKET_CODE_PREFIX}:${ticket.ticketToken}`;
 }
 
 export function parseTicketQrPayload(value: string): string {
@@ -75,6 +118,37 @@ export function parseTicketQrPayload(value: string): string {
   return normalized.startsWith(`${TICKET_CODE_PREFIX}:`)
     ? normalized.slice(TICKET_CODE_PREFIX.length + 1).trim()
     : normalized;
+}
+
+export function buildTicketUnits(
+  saleId: string,
+  ticketNumber: string,
+  createdAt: string,
+  items: SaleItem[]
+): SaleTicketUnit[] {
+  const units: SaleTicketUnit[] = [];
+  let globalUnitIndex = 0;
+
+  items.forEach((item, saleItemIndex) => {
+    for (let unitIndex = 0; unitIndex < item.quantity; unitIndex += 1) {
+      globalUnitIndex += 1;
+      units.push({
+        id: crypto.randomUUID(),
+        saleId,
+        saleItemIndex,
+        unitIndex,
+        ticketNumber: `${ticketNumber}-${String(globalUnitIndex).padStart(2, '0')}`,
+        ticketToken: crypto.randomUUID(),
+        productId: item.productId,
+        productNameSnapshot: item.productNameSnapshot,
+        unitPriceSnapshot: item.unitPriceSnapshot,
+        createdAt,
+        updatedAt: createdAt
+      });
+    }
+  });
+
+  return units;
 }
 
 function formatSaleItem(item: SaleItem): string[] {
@@ -110,6 +184,19 @@ function centerText(value: string): string {
   return `${' '.repeat(padStart)}${value}`;
 }
 
+function centerBanner(value: string): string {
+  const safeValue = sanitizeTicketText(value).trim().toUpperCase();
+  if (!safeValue) {
+    return separator('=');
+  }
+
+  const padded = ` ${safeValue} `;
+  const fillSize = Math.max(0, LINE_WIDTH - padded.length);
+  const left = '='.repeat(Math.floor(fillSize / 2));
+  const right = '='.repeat(Math.ceil(fillSize / 2));
+  return `${left}${padded}${right}`;
+}
+
 function formatHeaderLines(value: string): string[] {
   return sanitizeTicketText(value)
     .toUpperCase()
@@ -118,8 +205,8 @@ function formatHeaderLines(value: string): string[] {
     .filter((line) => line.length > 0);
 }
 
-function separator(): string {
-  return '-'.repeat(LINE_WIDTH);
+function separator(character = '-'): string {
+  return character.repeat(LINE_WIDTH);
 }
 
 function wrapTicketCode(value: string): string {

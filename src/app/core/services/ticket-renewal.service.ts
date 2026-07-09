@@ -1,6 +1,6 @@
 import { Injectable, computed, signal } from '@angular/core';
 
-import { CashSession, Sale, TicketRenewal } from '../models/app.models';
+import { CashSession, Sale, SaleTicketUnit, TicketRenewal } from '../models/app.models';
 import { nowIso } from '../utils/date.util';
 import { parseTicketQrPayload } from '../utils/ticket.util';
 import { CashSessionService } from './cash-session.service';
@@ -35,35 +35,35 @@ export class TicketRenewalService {
     private readonly syncService: FirebaseSyncService,
     private readonly printer: PrinterService
   ) {
-    this.renewals.set(this.storage.getItem<TicketRenewal[]>(TICKET_RENEWALS_KEY, []));
+    this.renewals.set(this.storage.getItem<TicketRenewal[]>(TICKET_RENEWALS_KEY, []).map((renewal) => normalizeRenewal(renewal)));
     this.persist();
   }
 
-  findSaleByCode(rawCode: string): { sale: Sale; session: CashSession } | null {
+  findSaleByCode(rawCode: string): { sale: Sale; session: CashSession; ticketUnit: SaleTicketUnit } | null {
     const ticketToken = parseTicketQrPayload(rawCode);
     if (!ticketToken) {
       return null;
     }
 
-    const localSale = this.saleService.findLocalSaleByTicketToken(ticketToken);
-    if (localSale) {
-      const localSession = this.cashSessionService.getSessionById(localSale.cashSessionId);
+    const localMatch = this.saleService.findLocalTicketUnitByTicketToken(ticketToken);
+    if (localMatch) {
+      const localSession = this.cashSessionService.getSessionById(localMatch.sale.cashSessionId);
       if (localSession) {
-        return { sale: localSale, session: localSession };
+        return { sale: localMatch.sale, session: localSession, ticketUnit: localMatch.ticketUnit };
       }
     }
 
-    const historySale = this.syncService.getHistorySaleByTicketToken(ticketToken);
-    if (!historySale) {
+    const historyMatch = this.syncService.getHistorySaleByTicketToken(ticketToken);
+    if (!historyMatch) {
       return null;
     }
 
-    const historySession = this.syncService.getHistorySessionById(historySale.cashSessionId);
+    const historySession = this.syncService.getHistorySessionById(historyMatch.sale.cashSessionId);
     if (!historySession) {
       return null;
     }
 
-    return { sale: historySale, session: historySession };
+    return { sale: historyMatch.sale, session: historySession, ticketUnit: historyMatch.ticketUnit };
   }
 
   async renewByCode(rawCode: string): Promise<TicketRenewal> {
@@ -72,8 +72,8 @@ export class TicketRenewalService {
       throw new Error('Ticket nao encontrado.');
     }
 
-    const { sale, session } = match;
-    const printed = await this.printer.printSale(sale, session, { headerTag: 'TICKET RENOVADO' });
+    const { sale, session, ticketUnit } = match;
+    const printed = await this.printer.printTicketUnit(sale, ticketUnit, session, { headerTag: 'TICKET RENOVADO' });
     if (!printed) {
       throw new Error('Falha ao imprimir o ticket renovado.');
     }
@@ -83,8 +83,11 @@ export class TicketRenewalService {
       id: crypto.randomUUID(),
       saleId: sale.id,
       cashSessionId: sale.cashSessionId,
-      ticketNumber: sale.ticketNumber,
-      ticketToken: sale.ticketToken,
+      ticketNumber: ticketUnit.ticketNumber,
+      ticketUnitId: ticketUnit.id,
+      ticketToken: ticketUnit.ticketToken,
+      productNameSnapshot: ticketUnit.productNameSnapshot,
+      unitPriceSnapshot: ticketUnit.unitPriceSnapshot,
       operatorName: session.operatorName,
       renewedAt: now,
       createdAt: now,
@@ -105,4 +108,16 @@ export class TicketRenewalService {
   private persist(): void {
     this.storage.setItem(TICKET_RENEWALS_KEY, this.renewals());
   }
+}
+
+function normalizeRenewal(renewal: TicketRenewal): TicketRenewal {
+  return {
+    ...renewal,
+    ticketUnitId: renewal.ticketUnitId || renewal.id,
+    productNameSnapshot: renewal.productNameSnapshot || 'Item',
+    unitPriceSnapshot:
+      typeof renewal.unitPriceSnapshot === 'number' && Number.isFinite(renewal.unitPriceSnapshot)
+        ? renewal.unitPriceSnapshot
+        : 0
+  };
 }

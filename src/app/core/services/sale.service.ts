@@ -1,7 +1,8 @@
 import { Injectable, signal } from '@angular/core';
 
-import { CartItem, PaymentMethod, PrintStatus, Sale } from '../models/app.models';
+import { CartItem, PaymentMethod, PrintStatus, Sale, SaleTicketUnit } from '../models/app.models';
 import { nowIso } from '../utils/date.util';
+import { buildTicketUnits } from '../utils/ticket.util';
 import { CashSessionService } from './cash-session.service';
 import { FirebaseSyncService } from './firebase-sync.service';
 import { PrinterService } from './printer.service';
@@ -11,6 +12,7 @@ const SALES_KEY = 'cc.sales';
 type LegacySale = Omit<Sale, 'paymentMethod'> & {
   paymentMethod: Sale['paymentMethod'] | 'card';
   ticketToken?: string;
+  ticketUnits?: SaleTicketUnit[];
 };
 
 @Injectable({ providedIn: 'root' })
@@ -40,7 +42,20 @@ export class SaleService {
   }
 
   findLocalSaleByTicketToken(ticketToken: string): Sale | undefined {
-    return this.sales().find((sale) => sale.ticketToken === ticketToken);
+    return this.sales().find(
+      (sale) => sale.ticketToken === ticketToken || sale.ticketUnits.some((ticketUnit) => ticketUnit.ticketToken === ticketToken)
+    );
+  }
+
+  findLocalTicketUnitByTicketToken(ticketToken: string): { sale: Sale; ticketUnit: SaleTicketUnit } | null {
+    for (const sale of this.sales()) {
+      const ticketUnit = sale.ticketUnits.find((unit) => unit.ticketToken === ticketToken);
+      if (ticketUnit) {
+        return { sale, ticketUnit };
+      }
+    }
+
+    return null;
   }
 
   async createSale(
@@ -68,10 +83,12 @@ export class SaleService {
     const ticketSequence = updatedSession.ticketSequence;
     const now = nowIso();
 
+    const saleId = crypto.randomUUID();
+    const ticketNumber = `TKT${String(ticketSequence).padStart(3, '0')}`;
     const sale: Sale = {
-      id: crypto.randomUUID(),
+      id: saleId,
       cashSessionId: session.id,
-      ticketNumber: `TKT${String(ticketSequence).padStart(3, '0')}`,
+      ticketNumber,
       ticketToken: crypto.randomUUID(),
       operatorName: session.operatorName,
       items: cartItems.map((item) => ({
@@ -84,11 +101,13 @@ export class SaleService {
       paymentMethod,
       noteCustomerName: normalizedNoteCustomerName,
       total,
+      ticketUnits: [],
       printStatus: 'not_requested',
       createdAt: now,
       updatedAt: now,
       reprintCount: 0
     };
+    sale.ticketUnits = buildTicketUnits(sale.id, sale.ticketNumber, now, sale.items);
 
     const printed = await this.printer.printSale(sale, updatedSession);
     sale.printStatus = this.resolvePrintStatus(printed);
@@ -134,17 +153,21 @@ export class SaleService {
   }
 
   private normalizeSale(sale: LegacySale): Sale {
+    const normalizedItems = sale.items.map((item) => ({
+      ...item,
+      unitPriceSnapshot: toNumber(item.unitPriceSnapshot),
+      quantity: toNumber(item.quantity),
+      total: toNumber(item.total)
+    }));
+    const ticketUnits = normalizeTicketUnits(sale, normalizedItems);
+
     return {
       ...sale,
       ticketToken: sale.ticketToken || crypto.randomUUID(),
       paymentMethod: sale.paymentMethod === 'card' ? 'note' : sale.paymentMethod,
       total: toNumber(sale.total),
-      items: sale.items.map((item) => ({
-        ...item,
-        unitPriceSnapshot: toNumber(item.unitPriceSnapshot),
-        quantity: toNumber(item.quantity),
-        total: toNumber(item.total)
-      })),
+      items: normalizedItems,
+      ticketUnits,
       noteCustomerName: sale.noteCustomerName?.trim() || undefined
     };
   }
@@ -156,4 +179,43 @@ export class SaleService {
 
 function toNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function normalizeTicketUnits(sale: LegacySale, items: Sale['items']): SaleTicketUnit[] {
+  if (Array.isArray(sale.ticketUnits) && sale.ticketUnits.length > 0) {
+    return sale.ticketUnits.map((ticketUnit, index) => ({
+      ...ticketUnit,
+      id: ticketUnit.id || crypto.randomUUID(),
+      saleId: ticketUnit.saleId || sale.id,
+      saleItemIndex: toNumber(ticketUnit.saleItemIndex),
+      unitIndex: toNumber(ticketUnit.unitIndex),
+      ticketNumber: ticketUnit.ticketNumber || `${sale.ticketNumber}-${String(index + 1).padStart(2, '0')}`,
+      ticketToken: ticketUnit.ticketToken || crypto.randomUUID(),
+      productId: ticketUnit.productId,
+      productNameSnapshot: ticketUnit.productNameSnapshot,
+      unitPriceSnapshot: toNumber(ticketUnit.unitPriceSnapshot),
+      createdAt: ticketUnit.createdAt || sale.createdAt,
+      updatedAt: ticketUnit.updatedAt || sale.updatedAt || sale.createdAt
+    }));
+  }
+
+  if (sale.ticketToken) {
+    return [
+      {
+        id: crypto.randomUUID(),
+        saleId: sale.id,
+        saleItemIndex: 0,
+        unitIndex: 0,
+        ticketNumber: sale.ticketNumber,
+        ticketToken: sale.ticketToken,
+        productId: items[0]?.productId || sale.id,
+        productNameSnapshot: items.length === 1 ? items[0].productNameSnapshot : `${items.length} itens`,
+        unitPriceSnapshot: items.length === 1 ? items[0].unitPriceSnapshot : toNumber(sale.total),
+        createdAt: sale.createdAt,
+        updatedAt: sale.updatedAt || sale.createdAt
+      }
+    ];
+  }
+
+  return buildTicketUnits(sale.id, sale.ticketNumber, sale.createdAt, items);
 }

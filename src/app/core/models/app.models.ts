@@ -58,6 +58,20 @@ export interface SaleItem {
   total: number;
 }
 
+export interface SaleTicketUnit {
+  id: string;
+  saleId: string;
+  saleItemIndex: number;
+  unitIndex: number;
+  ticketNumber: string;
+  ticketToken: string;
+  productId: string;
+  productNameSnapshot: string;
+  unitPriceSnapshot: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Sale {
   id: string;
   cashSessionId: string;
@@ -68,6 +82,7 @@ export interface Sale {
   paymentMethod: PaymentMethod;
   noteCustomerName?: string;
   total: number;
+  ticketUnits: SaleTicketUnit[];
   printStatus: PrintStatus;
   printedAt?: string;
   createdAt: string;
@@ -80,7 +95,10 @@ export interface TicketRenewal {
   saleId: string;
   cashSessionId: string;
   ticketNumber: string;
+  ticketUnitId: string;
   ticketToken: string;
+  productNameSnapshot: string;
+  unitPriceSnapshot: number;
   operatorName: string;
   renewedAt: string;
   createdAt: string;

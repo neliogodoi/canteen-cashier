@@ -1,7 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
-import { AppSettings, CashSession, PrinterConnectionStatus, Sale } from '../models/app.models';
-import { buildTicketQrPayload, buildTicketTextSections } from '../utils/ticket.util';
+import { AppSettings, CashSession, PrinterConnectionStatus, Sale, SaleTicketUnit } from '../models/app.models';
+import { buildTicketQrPayload, buildTicketUnitTextSections } from '../utils/ticket.util';
 import { SettingsService } from './settings.service';
 
 interface BluetoothCharacteristicLike {
@@ -142,8 +142,12 @@ export class PrinterService {
 
   async printSale(sale: Sale, session: CashSession, options: PrintSaleOptions = {}): Promise<boolean> {
     try {
-      const sections = buildTicketTextSections(sale, session, this.settings(), options);
-      await this.printText(sections.beforeQr, buildTicketQrPayload(sale), sections.afterQr);
+      for (const ticketUnit of sale.ticketUnits) {
+        const printed = await this.printTicketUnit(sale, ticketUnit, session, options);
+        if (!printed) {
+          return false;
+        }
+      }
       return true;
     } catch (error) {
       this.status.set('error');
@@ -158,6 +162,23 @@ export class PrinterService {
 
     for (let index = 0; index < payload.length; index += 180) {
       await characteristic.writeValueWithoutResponse(payload.slice(index, index + 180));
+    }
+  }
+
+  async printTicketUnit(
+    sale: Sale,
+    ticketUnit: SaleTicketUnit,
+    session: CashSession,
+    options: PrintSaleOptions = {}
+  ): Promise<boolean> {
+    try {
+      const sections = buildTicketUnitTextSections(sale, ticketUnit, session, this.settings(), options);
+      await this.printText(sections.beforeQr, buildTicketQrPayload(ticketUnit), sections.afterQr);
+      return true;
+    } catch (error) {
+      this.status.set('error');
+      this.lastError.set(this.resolveErrorMessage(error));
+      return false;
     }
   }
 
